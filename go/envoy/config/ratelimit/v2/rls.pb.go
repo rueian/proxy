@@ -96,6 +96,7 @@ func (m *RateLimitServiceConfig) GetServiceSpecifier() isRateLimitServiceConfig_
 	return nil
 }
 
+// Deprecated: Do not use.
 func (m *RateLimitServiceConfig) GetClusterName() string {
 	if x, ok := m.GetServiceSpecifier().(*RateLimitServiceConfig_ClusterName); ok {
 		return x.ClusterName

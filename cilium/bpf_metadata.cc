@@ -164,51 +164,20 @@ Network::FilterStatus Instance::onAccept(Network::ListenerFilterCallbacks &cb) {
 
   // Terminate the accept filter chain when the socket gets closed.
   ENVOY_LOG(debug, "MUX test: New connection accepted");
-  ASSERT(file_event_.get() == nullptr);
 
   cb_ = &cb;
 
-  file_event_ =
-    cb_->dispatcher().createFileEvent(socket.fd(),
-                                      [this](uint32_t events) {
-					ASSERT(events == Event::FileReadyType::Closed);
-					onClose();
-                                      },
-                                      Event::FileTriggerType::Edge, Event::FileReadyType::Closed);
-
-  timer_ = cb.dispatcher().createTimer([this]() -> void { onTimeout(); });
-  timer_->enableTimer(std::chrono::milliseconds(1));
+  mux_ = std::make_unique<Cilium::Mux>(cb_->dispatcher(), socket,
+				       // add new connetion callback
+				       [this](Network::ConnectionSocketPtr&& sock) {
+					 cb_->newConnection(std::move(sock));
+				       },
+				       // close accepted connection callback
+				       [this]() {
+					 cb_->continueFilterChain(false);
+				       });
 
   return Network::FilterStatus::StopIteration;
-}
-
-void Instance::onRead() {
-}
-
-void Instance::onTimeout() {
-  ENVOY_LOG(trace, "MUX test: timeout");
-  timer_.reset();
-
-  Network::ConnectionSocket &socket = cb_->socket();
-  // Create a copy of the socket and pass it to newConnection callback.
-  int fd2 = dup(socket.fd());
-  ASSERT(fd2 >= 0, "dup() failed");
-
-  Network::ConnectionSocketPtr sock = std::make_unique<Network::ConnectionSocketImpl>(fd2, socket.localAddress(), socket.remoteAddress());
-  sock->addOptions(socket.options()); // copy a referene to the options on the original socket.
-  if (socket.localAddressRestored()) {
-    sock->setLocalAddress(socket.localAddress(), true);
-  }
-  ENVOY_LOG(trace, "MUX test: newConnection on dupped fd {}", fd2);
-
-  cb_->newConnection(std::move(sock));
-}
-
-void Instance::onClose() {
-  ENVOY_LOG(debug, "MUX test: Closing socket");
-  timer_.reset();
-  file_event_.reset();
-  cb_->continueFilterChain(false);
 }
 
 } // namespace BpfMetadata

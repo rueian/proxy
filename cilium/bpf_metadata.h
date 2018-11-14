@@ -11,6 +11,7 @@
 #include "cilium/api/bpf_metadata.pb.h"
 #include "cilium/proxymap.h"
 #include "cilium/host_map.h"
+#include "cilium/mux_socket.h"
 
 namespace Envoy {
 namespace Filter {
@@ -41,20 +42,18 @@ typedef std::shared_ptr<Config> ConfigSharedPtr;
 class Instance : public Network::ListenerFilter,
                  Logger::Loggable<Logger::Id::filter> {
 public:
- Instance(const ConfigSharedPtr& config) : config_(config) {}
+  Instance(const ConfigSharedPtr& config) : config_(config) {}
+  ~Instance() {
+    cb_->continueFilterChain(false);
+  }
 
   // Network::ListenerFilter
   Network::FilterStatus onAccept(Network::ListenerFilterCallbacks &cb) override;
 
 private:
-  void onRead();
-  void onTimeout();
-  void onClose();
-
   const ConfigSharedPtr config_;
   Network::ListenerFilterCallbacks* cb_{};
-  Event::FileEventPtr file_event_;
-  Event::TimerPtr timer_;
+  Cilium::MuxPtr mux_;
 };
 
 } // namespace BpfMetadata

@@ -397,6 +397,8 @@ static_resources:
       config:
         is_ingress: {0}
     filter_chains:
+    - transport_socket:
+        name: cilium.transport_sockets.mux
       filters:
       - name: cilium.network
         config:
@@ -896,6 +898,8 @@ static_resources:
       config:
         is_ingress: {0}
     filter_chains:
+    - transport_socket:
+        name: cilium.transport_sockets.mux
       filters:
       - name: cilium.network
         config:
@@ -1180,6 +1184,8 @@ static_resources:
       config:
         is_ingress: {0}
     filter_chains:
+    - transport_socket:
+        name: cilium.transport_sockets.mux
       filters:
       - name: cilium.network
         config:
@@ -1374,6 +1380,8 @@ static_resources:
       config:
         is_ingress: {0}
     filter_chains:
+    - transport_socket:
+        name: cilium.transport_sockets.mux
       filters:
       - name: cilium.network
         config:

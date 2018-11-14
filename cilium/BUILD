@@ -6,6 +6,27 @@ load(
 )
 
 envoy_cc_library(
+    name = "mux_socket_lib",
+    srcs = [
+        "mux_socket.cc",
+    ],
+    hdrs = [
+        "mux_socket.h",
+    ],
+    repository = "@envoy",
+    deps = [
+        "@envoy//include/envoy/server:transport_socket_config_interface",
+        "@envoy//include/envoy/registry:registry",
+        "@envoy//source/common/buffer:buffer_lib",
+        "@envoy//source/common/common:assert_lib",
+        "@envoy//source/common/common:empty_string",
+        "@envoy//source/common/common:logger_lib",
+        "@envoy//source/common/network:listen_socket_lib",
+        "@envoy_api//envoy/api/v2/core:base_cc",
+    ],
+)
+
+envoy_cc_library(
     name = "socket_option_lib",
     hdrs = [
         "socket_option.h",
@@ -158,6 +179,7 @@ envoy_cc_library(
         "//cilium/api:bpf_metadata_cc",
         "//cilium/api:nphds_cc",
         "//cilium:grpc_subscription_lib",
+        "//cilium:mux_socket_lib",
         "//cilium:proxymap_lib",
         "//cilium:socket_option_lib",
     ],

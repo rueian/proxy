@@ -150,6 +150,7 @@ envoy_cc_library(
         "@envoy//source/common/common:assert_lib",
         "@envoy//source/common/common:logger_lib",
         "@envoy//source/common/network:address_lib",
+        "@envoy//source/common/network:listen_socket_lib",
         "@envoy//source/common/router:config_utility_lib",
         "@envoy//include/envoy/config:subscription_interface",
         "@envoy//include/envoy/singleton:manager_interface",

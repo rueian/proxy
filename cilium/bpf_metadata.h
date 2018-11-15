@@ -1,5 +1,7 @@
 #pragma once
 
+#include "envoy/event/file_event.h"
+#include "envoy/event/timer.h"
 #include "envoy/json/json_object.h"
 #include "envoy/network/filter.h"
 #include "envoy/server/filter_config.h"
@@ -39,13 +41,20 @@ typedef std::shared_ptr<Config> ConfigSharedPtr;
 class Instance : public Network::ListenerFilter,
                  Logger::Loggable<Logger::Id::filter> {
 public:
-  Instance(const ConfigSharedPtr& config) : config_(config) {}
+ Instance(const ConfigSharedPtr& config) : config_(config) {}
 
   // Network::ListenerFilter
   Network::FilterStatus onAccept(Network::ListenerFilterCallbacks &cb) override;
 
 private:
+  void onRead();
+  void onTimeout();
+  void onClose();
+
   const ConfigSharedPtr config_;
+  Network::ListenerFilterCallbacks* cb_{};
+  Event::FileEventPtr file_event_;
+  Event::TimerPtr timer_;
 };
 
 } // namespace BpfMetadata

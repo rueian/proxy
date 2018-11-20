@@ -7,8 +7,8 @@ workspace(name = "cilium")
 #
 # No other line in this file may have ENVOY_SHA followed by an equals sign!
 #
-ENVOY_SHA = "4dd2070ee476e23123842ce95af3ebd682338dd7"
-ENVOY_SHA256 = "7080dfb407541faf95d67da41f49080645ee9adf83263edaa2814b856699eda1"
+ENVOY_SHA = "17034b58da6f2ecae1326fab33c2631bbff5b865"
+ENVOY_SHA256 = "f230065aa3e88066abfc33fa9f0a9778ac396bd487f26b3b38e8a326723f89f8"
 
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 

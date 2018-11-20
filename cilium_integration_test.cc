@@ -377,6 +377,8 @@ static_resources:
     - socket_address:
         address: 127.0.0.1
         port_value: 0
+    transport_socket:
+      name: cilium.transport_sockets.mux
   - name: xds-grpc-cilium
     connect_timeout:
       seconds: 5
@@ -878,6 +880,8 @@ static_resources:
     - socket_address:
         address: 127.0.0.1
         port_value: 0
+    transport_socket:
+      name: cilium.transport_sockets.mux
   - name: xds-grpc-cilium
     connect_timeout:
       seconds: 5
@@ -1164,6 +1168,8 @@ static_resources:
     - socket_address:
         address: 127.0.0.1
         port_value: 0
+    transport_socket:
+      name: cilium.transport_sockets.mux
   - name: xds-grpc-cilium
     connect_timeout:
       seconds: 5
@@ -1360,6 +1366,8 @@ static_resources:
     - socket_address:
         address: 127.0.0.1
         port_value: 0
+    transport_socket:
+      name: cilium.transport_sockets.mux
   - name: xds-grpc-cilium
     connect_timeout:
       seconds: 5

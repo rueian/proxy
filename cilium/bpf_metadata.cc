@@ -123,6 +123,10 @@ bool Config::getMetadata(Network::ConnectionSocket& socket) {
   return ok;
 }
 
+Instance::Instance(const ConfigSharedPtr& config) : config_(config) {
+  // Should create upstream mux here and connect it to the listening address
+}
+
 Network::FilterStatus Instance::onAccept(Network::ListenerFilterCallbacks &cb) {
   Network::ConnectionSocket &socket = cb.socket();
   if (!config_->getMetadata(socket)) {
@@ -174,9 +178,12 @@ Network::FilterStatus Instance::onAccept(Network::ListenerFilterCallbacks &cb) {
 				       },
 				       // close accepted connection callback
 				       [this]() {
+					 stopped_ = false;
 					 cb_->continueFilterChain(false);
-				       });
+				       },
+				       false /* downstream mux */);
 
+  stopped_ = true;
   return Network::FilterStatus::StopIteration;
 }
 

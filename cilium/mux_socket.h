@@ -16,9 +16,14 @@ extern std::string MuxSocketName;
 
 class MuxSocketFactory : public Network::TransportSocketFactory {
 public:
+  MuxSocketFactory(bool upstream) : upstream_(upstream) {}
+
   // Network::TransportSocketFactory
   Network::TransportSocketPtr createTransportSocket() const override;
   bool implementsSecureTransport() const override;
+private:
+  MuxSocketFactory() {}
+  bool upstream_;
 };
 
 union ShimTuple {
@@ -54,6 +59,7 @@ typedef std::unique_ptr<MuxData> MuxDataPtr;
 
 class MuxSocket : public Network::TransportSocket, protected Logger::Loggable<Logger::Id::connection> {
 public:
+  MuxSocket(bool upstream) : upstream_(upstream) {}
   virtual ~MuxSocket();
 
   // Network::TransportSocket
@@ -67,6 +73,7 @@ public:
   const Ssl::Connection* ssl() const override { return nullptr; }
 
 private:
+  bool upstream_;
   MuxData* mux_data_{};
   Network::TransportSocketCallbacks* callbacks_{};
   bool shutdown_{};
@@ -78,7 +85,7 @@ typedef std::function<void()> CloseMuxCB;
 
 class Mux {
 public:
-  Mux(Event::Dispatcher& dispatcher, Network::ConnectionSocket& socket, NewConnectionCB addNewConnetion, CloseMuxCB closeMux);
+  Mux(Event::Dispatcher& dispatcher, Network::ConnectionSocket& socket, NewConnectionCB addNewConnetion, CloseMuxCB closeMux, bool upstream);
   virtual ~Mux();
 
 protected:
@@ -87,11 +94,11 @@ protected:
 
   // Read data from the muxed socket and demux it to "sockets_"
   // May be called from multiple threads
-  void readAndDemux();
+  void readAndDemux(bool upstream);
   Api::SysCallIntResult prependAndWrite(const ShimTuple& id, Buffer::Instance& buffer);
 
 private:
-  MuxData* addBuffer(const ShimTuple& id);
+  MuxData* addBuffer(const ShimTuple& id, bool upstream);
 
   void onRead();
   void onWrite();
@@ -101,6 +108,7 @@ private:
   Network::ConnectionSocket& socket_;
   NewConnectionCB addNewConnection_;
   CloseMuxCB closeMux_;
+  bool upstream_;
 
   // This lock MUST be acquired first if at all
   mutable Thread::MutexBasicLockable lock_;

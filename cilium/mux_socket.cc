@@ -17,7 +17,7 @@ typedef std::function<void()> ReadCB;
 // Not sure yet if access from multiple threads is actually needed
 class MuxData {
 public:
-  MuxData(Mux& mux, const ShimTuple& id) : mux_(mux), id_(id) {}
+  MuxData(Mux& mux, const ShimTuple& id, bool upstream) : mux_(mux), id_(id), upstream_(upstream) {}
 
   void setReadCallback(ReadCB cb) {
     ENVOY_LOG_MISC(trace, "MUX setting read callback");
@@ -26,6 +26,7 @@ public:
 
   Mux& mux_;
   const ShimTuple id_;
+  bool upstream_;
   ReadCB readCallback_{};
 
   mutable Thread::MutexBasicLockable lock_;
@@ -46,6 +47,8 @@ void MuxSocket::setTransportSocketCallbacks(Network::TransportSocketCallbacks& c
   Thread::LockGuard guard(mux_lock);
   auto it = muxed_buffers.find(fd_);
   if (it != muxed_buffers.end()) {
+    // Downstream connections should get here, as the MuxData for them is added prior
+    // to the connection being created.
     ENVOY_LOG_MISC(trace, "MUX found muxed read buffer for fd {}", fd_);
     mux_data_ = it->second;
     mux_data_->setReadCallback([this]() {
@@ -53,7 +56,9 @@ void MuxSocket::setTransportSocketCallbacks(Network::TransportSocketCallbacks& c
 	callbacks_->setReadBufferReady();
       });
   } else {
+    // Upstream connections need to check if MuxData can be found for them
     ENVOY_LOG_MISC(trace, "MUX DID NOT find muxed read buffer for fd {}", fd_);
+    
   }
 }
 
@@ -78,7 +83,7 @@ Network::IoResult MuxSocket::doRead(Buffer::Instance& buffer) {
   }
 
   // Kick the mux transport to read data
-  mux_data_->mux_.readAndDemux();
+  mux_data_->mux_.readAndDemux(upstream_);
 
   // Move all available data to the caller's buffer
   mux_data_->lock_.lock();
@@ -141,8 +146,8 @@ std::string MuxSocket::protocol() const { return EMPTY_STRING; }
 
 void MuxSocket::onConnected() { callbacks_->raiseEvent(Network::ConnectionEvent::Connected); }
 
-Mux::Mux(Event::Dispatcher& dispatcher, Network::ConnectionSocket& socket, NewConnectionCB addNewConnetion, CloseMuxCB closeMux)
-  : socket_(socket), addNewConnection_(addNewConnetion), closeMux_(closeMux) {
+Mux::Mux(Event::Dispatcher& dispatcher, Network::ConnectionSocket& socket, NewConnectionCB addNewConnetion, CloseMuxCB closeMux, bool upstream)
+  : socket_(socket), addNewConnection_(addNewConnetion), closeMux_(closeMux), upstream_(upstream) {
   file_event_ =
     dispatcher.createFileEvent(socket_.fd(),
 			       [this](uint32_t events) {
@@ -183,7 +188,7 @@ Mux::Mux(Event::Dispatcher& dispatcher, Network::ConnectionSocket& socket, NewCo
     ENVOY_LOG_MISC(trace, "MUX unknown IP address format!");
     return;
   }
-  addBuffer(id);
+  addBuffer(id, upstream_);
 #endif
 }
 
@@ -210,7 +215,7 @@ Mux::~Mux() {
 
 void Mux::onRead() {
   ENVOY_LOG_MISC(trace, "MUX test: onRead()");
-  readAndDemux();
+  readAndDemux(upstream_);
 }
 
 void Mux::onWrite() {
@@ -250,14 +255,14 @@ void Mux::onClose() {
 }
 
 // called with 'lock_' held!
-MuxData* Mux::addBuffer(const ShimTuple& id) {
+MuxData* Mux::addBuffer(const ShimTuple& id, bool upstream) {
   // Create a copy of the socket and pass it to addNewConnection callback.
   int fd2 = dup(socket_.fd());
   ASSERT(fd2 >= 0, "dup() failed");
 
   std::vector<uint32_t> key(id._tuple_, std::end(id._tuple_));
   // 'buffers_' owns the MuxData objects!
-  auto pair = buffers_.emplace(key, std::make_unique<MuxData>(*this, id));
+  auto pair = buffers_.emplace(key, std::make_unique<MuxData>(*this, id, upstream));
   ASSERT(pair.second == true); // inserted
   MuxData* mux_data = pair.first->second.get();
 			       
@@ -328,7 +333,8 @@ void Mux::removeBuffer(int fd) {
   }
 }
 
-void Mux::readAndDemux() {
+void Mux::readAndDemux(bool upstream) {
+  ASSERT(upstream == upstream_);
   Thread::LockGuard guard(lock_);
   do {
     // 16K read is arbitrary. TODO(mattklein123) PERF: Tune the read size.
@@ -422,9 +428,9 @@ void Mux::readAndDemux() {
 	      // New connection?
 	      ENVOY_LOG_MISC(trace, "MUX did NOT find a buffer, creating a new one for frame length {}", remaining_read_length_);
 #if 0
-	      current_reader_ = addBuffer(hdr.id_);
+	      current_reader_ = addBuffer(hdr.id_, upstream_);
 #else
-	      current_reader_ = addBuffer(id);
+	      current_reader_ = addBuffer(id, upstream_);
 #endif
 	    }
 	  }
@@ -473,20 +479,22 @@ Api::SysCallIntResult Mux::prependAndWrite(const ShimTuple& /*id*/, Buffer::Inst
 }
 
 Network::TransportSocketPtr MuxSocketFactory::createTransportSocket() const {
-  return std::make_unique<MuxSocket>();
+  return std::make_unique<MuxSocket>(upstream_);
 }
 
 bool MuxSocketFactory::implementsSecureTransport() const { return false; }
 
 Network::TransportSocketFactoryPtr UpstreamMuxSocketConfigFactory::createTransportSocketFactory(
     const Protobuf::Message&, Server::Configuration::TransportSocketFactoryContext&) {
-  return std::make_unique<MuxSocketFactory>();
+  ENVOY_LOG_MISC(trace, "MUX created Upstream TransportSocketFactory");
+  return std::make_unique<MuxSocketFactory>(true);
 }
 
 Network::TransportSocketFactoryPtr DownstreamMuxSocketConfigFactory::createTransportSocketFactory(
     const Protobuf::Message&, Server::Configuration::TransportSocketFactoryContext&,
     const std::vector<std::string>&) {
-  return std::make_unique<MuxSocketFactory>();
+  ENVOY_LOG_MISC(trace, "MUX created Downstream TransportSocketFactory");
+  return std::make_unique<MuxSocketFactory>(false);
 }
 
 ProtobufTypes::MessagePtr MuxSocketConfigFactory::createEmptyConfigProto() {

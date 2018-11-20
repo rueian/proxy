@@ -42,9 +42,11 @@ typedef std::shared_ptr<Config> ConfigSharedPtr;
 class Instance : public Network::ListenerFilter,
                  Logger::Loggable<Logger::Id::filter> {
 public:
-  Instance(const ConfigSharedPtr& config) : config_(config) {}
+  Instance(const ConfigSharedPtr& config);
   ~Instance() {
-    cb_->continueFilterChain(false);
+    if (stopped_) {
+      cb_->continueFilterChain(false);
+    }
   }
 
   // Network::ListenerFilter
@@ -52,8 +54,10 @@ public:
 
 private:
   const ConfigSharedPtr config_;
+  bool stopped_{false};
   Network::ListenerFilterCallbacks* cb_{};
   Cilium::MuxPtr mux_;
+  Cilium::MuxPtr upstream_mux_;
 };
 
 } // namespace BpfMetadata

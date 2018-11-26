@@ -17,7 +17,7 @@ typedef std::function<void()> ReadCB;
 // Not sure yet if access from multiple threads is actually needed
 class MuxData {
 public:
-  MuxData(Mux& mux, const ShimTuple& id, bool upstream) : mux_(mux), id_(id), upstream_(upstream) {}
+  MuxData(Mux& mux, const ShimTuple& id, int fd, bool upstream) : mux_(mux), id_(id), fd_(fd), upstream_(upstream) {}
 
   void setReadCallback(ReadCB cb) {
     ENVOY_LOG_MISC(trace, "MUX setting read callback");
@@ -26,6 +26,7 @@ public:
 
   Mux& mux_;
   const ShimTuple id_;
+  int fd_;
   bool upstream_;
   ReadCB readCallback_{};
 
@@ -41,24 +42,70 @@ static std::map<int, MuxData*> muxed_buffers GUARDED_BY(mux_lock);
 void MuxSocket::setTransportSocketCallbacks(Network::TransportSocketCallbacks& callbacks) {
   callbacks_ = &callbacks;
 
-  // Find mux_data_ based on the fd
-  fd_ = callbacks_->fd();
+  Cilium::Mux* upstream_mux = nullptr;
+  ShimTuple id;
 
-  Thread::LockGuard guard(mux_lock);
-  auto it = muxed_buffers.find(fd_);
-  if (it != muxed_buffers.end()) {
-    // Downstream connections should get here, as the MuxData for them is added prior
-    // to the connection being created.
-    ENVOY_LOG_MISC(trace, "MUX found muxed read buffer for fd {}", fd_);
-    mux_data_ = it->second;
+  if (!upstream_) {
+    // Find mux_data_ based on the fd
+    fd_ = callbacks_->fd();
+
+    Thread::LockGuard guard(mux_lock);
+    auto it = muxed_buffers.find(fd_);
+    if (it != muxed_buffers.end()) {
+      ENVOY_LOG_MISC(trace, "MUX found muxed read buffer for fd {}", fd_);
+      mux_data_ = it->second;
+    } else {
+      ENVOY_LOG_MISC(trace, "MUX DID NOT find muxed read buffer for fd {}", fd_); 
+    }
+  } else {
+    // Upstream: Find a mux based on the connection metadata and dup and reset the
+    // upstream Mux fd.
+    auto ip = callbacks_->connection().remoteAddress()->ip();
+    // auto ip_src = callbacks_->connection().localAddress()->ip();
+    Thread::LockGuard guard(mux_lock);
+
+    for (auto it = muxed_buffers.begin(); it != muxed_buffers.end(); it++) {
+      MuxData* mux_data = it->second;
+      id = mux_data->id_.flip();
+
+      // XXX Match also the source (local) address, and make sure it is not nullptr
+
+      if ((ip->ipv4() && id.tuple_v4.saddr_ == ip->ipv4()->address() &&
+	   id.tuple_v4.sport_ == htons(ip->port())) ||
+	  (ip->ipv6() && id.tuple_v6.saddr_ == ip->ipv6()->address() &&
+	   id.tuple_v6.sport_ == htons(ip->port()))) {
+	ENVOY_LOG_MISC(trace, "MUX found corresponding downstream connection on fd {} on mux {}!", it->first, static_cast<void*>(&mux_data->mux_));
+	// Create an upstream Mux for testing purposes if not already created
+	if (mux_data->mux_.other != nullptr) {
+	  upstream_mux = mux_data->mux_.other;
+	} else {
+	  upstream_mux = new Cilium::Mux(callbacks_->connection().dispatcher(), callbacks_->socket(),
+					      // add new connetion callback
+					      [this](Network::ConnectionSocketPtr&& sock) {
+						ENVOY_LOG_MISC(trace, "UPSTREAM MUX new connection callback on fd {}!", sock->fd());
+					      },
+					      // close accepted connection callback
+					      [this]() {
+						ENVOY_LOG_MISC(trace, "UPSTREAM MUX close MUX connection callback!");
+					      },
+					      true /* upstream mux */);
+	  mux_data->mux_.other = upstream_mux; // Needs lock?
+	}
+	break;
+      }
+    }
+  }
+  if (mux_data_ != nullptr || upstream_mux) {
+    if (mux_data_ == nullptr && upstream_mux) {
+      mux_data_ = upstream_mux->addBuffer(id, true);
+      callbacks_->socket().resetFd(mux_data_->fd_);
+      fd_ = callbacks_->fd();
+    }
+    ASSERT(mux_data_ != nullptr);
     mux_data_->setReadCallback([this]() {
 	ENVOY_LOG_MISC(trace, "MUX SETTING read buffer ready");
 	callbacks_->setReadBufferReady();
       });
-  } else {
-    // Upstream connections need to check if MuxData can be found for them
-    ENVOY_LOG_MISC(trace, "MUX DID NOT find muxed read buffer for fd {}", fd_);
-    
   }
 }
 
@@ -142,7 +189,7 @@ Network::IoResult MuxSocket::doWrite(Buffer::Instance& buffer, bool end_stream) 
   return {action, bytes_written, false};
 }
 
-std::string MuxSocket::protocol() const { return EMPTY_STRING; }
+std::string MuxSocket::protocol() const { return MuxSocketName; } // XXX: HACK
 
 void MuxSocket::onConnected() { callbacks_->raiseEvent(Network::ConnectionEvent::Connected); }
 
@@ -170,25 +217,27 @@ Mux::Mux(Event::Dispatcher& dispatcher, Network::ConnectionSocket& socket, NewCo
   timer_->enableTimer(std::chrono::milliseconds(1));
 
 #if 1
-  // TCP proxy does not connected in the test unless we short-circuit the connection set-up.
-  ShimTuple id{};
-  auto ip = socket_.localAddress()->ip();
-  auto ip_src = socket_.remoteAddress()->ip();
-  if (ip->ipv4()) {
-    id.tuple_v4.daddr_ = ip->ipv4()->address();
-    id.tuple_v4.dport_ = htons(ip->port());
-    id.tuple_v4.saddr_ = ip_src->ipv4()->address();
-    id.tuple_v4.sport_ = htons(ip_src->port());
-  } else if (ip->ipv6()) {
-    id.tuple_v6.daddr_ = ip->ipv6()->address();
-    id.tuple_v6.dport_ = htons(ip->port());
-    id.tuple_v6.saddr_ = ip_src->ipv6()->address();
-    id.tuple_v6.sport_ = htons(ip_src->port());
-  } else {
-    ENVOY_LOG_MISC(trace, "MUX unknown IP address format!");
-    return;
+  if (!upstream) {
+    // TCP proxy does not connected in the test unless we short-circuit the connection set-up.
+    ShimTuple id{};
+    auto ip = socket_.localAddress()->ip();
+    auto ip_src = socket_.remoteAddress()->ip();
+    if (ip->ipv4()) {
+      id.tuple_v4.daddr_ = ip->ipv4()->address();
+      id.tuple_v4.dport_ = htons(ip->port());
+      id.tuple_v4.saddr_ = ip_src->ipv4()->address();
+      id.tuple_v4.sport_ = htons(ip_src->port());
+    } else if (ip->ipv6()) {
+      id.tuple_v6.daddr_ = ip->ipv6()->address();
+      id.tuple_v6.dport_ = htons(ip->port());
+      id.tuple_v6.saddr_ = ip_src->ipv6()->address();
+      id.tuple_v6.sport_ = htons(ip_src->port());
+    } else {
+      ENVOY_LOG_MISC(trace, "MUX unknown IP address format!");
+      return;
+    }
+    addBuffer(id, upstream_);
   }
-  addBuffer(id, upstream_);
 #endif
 }
 
@@ -262,7 +311,7 @@ MuxData* Mux::addBuffer(const ShimTuple& id, bool upstream) {
 
   std::vector<uint32_t> key(id._tuple_, std::end(id._tuple_));
   // 'buffers_' owns the MuxData objects!
-  auto pair = buffers_.emplace(key, std::make_unique<MuxData>(*this, id, upstream));
+  auto pair = buffers_.emplace(key, std::make_unique<MuxData>(*this, id, fd2, upstream));
   ASSERT(pair.second == true); // inserted
   MuxData* mux_data = pair.first->second.get();
 			       
@@ -271,46 +320,48 @@ MuxData* Mux::addBuffer(const ShimTuple& id, bool upstream) {
     Thread::LockGuard guard(mux_lock);
     muxed_buffers.emplace(fd2, mux_data);
   }
+  if (!upstream) {
+    struct sockaddr_storage ss_src{}, ss_dst{};
+    size_t ss_size;
+    // Call the addNewConnection callback
+    if (id.tuple_v6.dport_ != 0) {
+      struct sockaddr_in6* sin_src = reinterpret_cast<struct sockaddr_in6*>(&ss_src);
+      ss_size = sizeof(*sin_src);
+      sin_src->sin6_family = AF_INET6;
+      memcpy(static_cast<void*>(&sin_src->sin6_addr.s6_addr), static_cast<const void*>(&id.tuple_v6.saddr_), 
+	     sizeof(absl::uint128));
+      sin_src->sin6_port = id.tuple_v6.sport_;
 
-  struct sockaddr_storage ss_src{}, ss_dst{};
-  size_t ss_size;
-  // Call the addNewConnection callback
-  if (id.tuple_v6.dport_ != 0) {
-    struct sockaddr_in6* sin_src = reinterpret_cast<struct sockaddr_in6*>(&ss_src);
-    ss_size = sizeof(*sin_src);
-    sin_src->sin6_family = AF_INET6;
-    memcpy(static_cast<void*>(&sin_src->sin6_addr.s6_addr), static_cast<const void*>(&id.tuple_v6.saddr_), 
-	   sizeof(absl::uint128));
-    sin_src->sin6_port = id.tuple_v6.sport_;
+      struct sockaddr_in6* sin_dst = reinterpret_cast<struct sockaddr_in6*>(&ss_dst);
+      sin_dst->sin6_family = AF_INET6;
+      memcpy(static_cast<void*>(&sin_dst->sin6_addr.s6_addr), static_cast<const void*>(&id.tuple_v6.daddr_), 
+	     sizeof(absl::uint128));
+      sin_dst->sin6_port = id.tuple_v6.dport_;
+    } else {
+      struct sockaddr_in* sin_src = reinterpret_cast<struct sockaddr_in*>(&ss_src);
+      ss_size = sizeof(*sin_src);
+      sin_src->sin_family = AF_INET;
+      sin_src->sin_addr.s_addr = id.tuple_v4.saddr_;
+      sin_src->sin_port = id.tuple_v4.sport_;
 
-    struct sockaddr_in6* sin_dst = reinterpret_cast<struct sockaddr_in6*>(&ss_dst);
-    sin_dst->sin6_family = AF_INET6;
-    memcpy(static_cast<void*>(&sin_dst->sin6_addr.s6_addr), static_cast<const void*>(&id.tuple_v6.daddr_), 
-	   sizeof(absl::uint128));
-    sin_dst->sin6_port = id.tuple_v6.dport_;
+      struct sockaddr_in* sin_dst = reinterpret_cast<struct sockaddr_in*>(&ss_dst);
+      sin_dst->sin_family = AF_INET;
+      sin_dst->sin_addr.s_addr = id.tuple_v4.daddr_;
+      sin_dst->sin_port = id.tuple_v4.dport_;
+    }
+    Network::ConnectionSocketPtr sock =
+      std::make_unique<Network::ConnectionSocketImpl>(fd2, Network::Address::addressFromSockAddr(ss_dst, ss_size, false), Network::Address::addressFromSockAddr(ss_src, ss_size, false));
+    sock->addOptions(socket_.options()); // copy a reference to the options on the original socket.
+    if (socket_.localAddressRestored()) {
+      sock->setLocalAddress(sock->localAddress(), true);
+    }
+    sock->setDetectedTransportProtocol(MuxSocketName);
+
+    ENVOY_LOG_MISC(trace, "MUX test: newConnection on dupped fd {}", fd2);
+    addNewConnection_(std::move(sock));
   } else {
-    struct sockaddr_in* sin_src = reinterpret_cast<struct sockaddr_in*>(&ss_src);
-    ss_size = sizeof(*sin_src);
-    sin_src->sin_family = AF_INET;
-    sin_src->sin_addr.s_addr = id.tuple_v4.saddr_;
-    sin_src->sin_port = id.tuple_v4.sport_;
-
-    struct sockaddr_in* sin_dst = reinterpret_cast<struct sockaddr_in*>(&ss_dst);
-    sin_dst->sin_family = AF_INET;
-    sin_dst->sin_addr.s_addr = id.tuple_v4.daddr_;
-    sin_dst->sin_port = id.tuple_v4.dport_;
+    // Upstream connection
   }
-  Network::ConnectionSocketPtr sock =
-    std::make_unique<Network::ConnectionSocketImpl>(fd2, Network::Address::addressFromSockAddr(ss_dst, ss_size, false), Network::Address::addressFromSockAddr(ss_src, ss_size, false));
-  sock->addOptions(socket_.options()); // copy a reference to the options on the original socket.
-  if (socket_.localAddressRestored()) {
-    sock->setLocalAddress(sock->localAddress(), true);
-  }
-  sock->setDetectedTransportProtocol(MuxSocketName);
-
-  ENVOY_LOG_MISC(trace, "MUX test: newConnection on dupped fd {}", fd2);
-
-  addNewConnection_(std::move(sock));
   return mux_data;
 }
 
@@ -414,6 +465,19 @@ void Mux::readAndDemux(bool upstream) {
 	    std::vector<uint32_t> key(id._tuple_, std::end(id._tuple_));
 #endif
 	    auto it = buffers_.find(key);
+	    if (upstream_ && it == buffers_.end()) {
+	      for (it = buffers_.begin(); it != buffers_.end(); it++) {
+		MuxData* mux_data = it->second.get();
+		// XXX Match also the destination (local) address, and make sure it is not nullptr
+		if ((ip->ipv4() && mux_data->id_.tuple_v4.saddr_ == ip_src->ipv4()->address() &&
+		     mux_data->id_.tuple_v4.sport_ == htons(ip_src->port())) ||
+		    (ip->ipv6() && mux_data->id_.tuple_v6.saddr_ == ip_src->ipv6()->address() &&
+		     mux_data->id_.tuple_v6.sport_ == htons(ip_src->port()))) {
+		  ENVOY_LOG_MISC(trace, "MUX found THE upstream connection on fd {} on mux {}!", mux_data->fd_, static_cast<void*>(&mux_data->mux_));
+		  break;
+		}
+	      }
+	    }
 	    if (it != buffers_.end()) {
 	      if (remaining_read_length_ > 0 ) {
 		ENVOY_LOG_MISC(trace, "MUX found buffer for frame length {}", remaining_read_length_);

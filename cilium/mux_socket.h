@@ -30,7 +30,21 @@ union ShimTuple {
   bool operator==(const ShimTuple& other) const {
     return memcmp(this, &other, sizeof *this) == 0;
   }
-  
+  ShimTuple flip() const {
+    ShimTuple id{};
+    if (tuple_v6.dport_ != 0) /* IPV6 */ {
+      id.tuple_v6.saddr_ = tuple_v6.daddr_;
+      id.tuple_v6.daddr_ = tuple_v6.saddr_;
+      id.tuple_v6.sport_ = tuple_v6.dport_;
+      id.tuple_v6.dport_ = tuple_v6.sport_;
+    } else {
+      id.tuple_v4.saddr_ = tuple_v4.daddr_;
+      id.tuple_v4.daddr_ = tuple_v4.saddr_;
+      id.tuple_v4.sport_ = tuple_v4.dport_;
+      id.tuple_v4.dport_ = tuple_v4.sport_;      
+    }
+    return id;
+  }
   struct {
     uint32_t saddr_;
     uint32_t daddr_;
@@ -119,6 +133,8 @@ private:
   Buffer::OwnedImpl write_buffer_ GUARDED_BY(lock_);  // shim headers
   Event::FileEventPtr file_event_;
   Event::TimerPtr timer_;
+
+  Mux* other{};  // ponter to the corresponding up/downstream mux.
 };
 
 typedef std::unique_ptr<Mux> MuxPtr;

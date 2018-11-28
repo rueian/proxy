@@ -24,7 +24,7 @@ public:
   }
 
   Mux& mux_;
-  const ShimTuple id_;
+  const ShimTuple id_; // in the write order, reader side has the reverse key in Mux::buffers_
   int fd_;
   bool upstream_;
   ReadCB readCallback_{};
@@ -64,8 +64,9 @@ void MuxSocket::setTransportSocketCallbacks(Network::TransportSocketCallbacks& c
 
     for (auto it = muxed_buffers.begin(); it != muxed_buffers.end(); it++) {
       MuxData* mux_data = it->second;
+      // Downstream 'id_' is in the writer order, it's source address is the upstream remote address!
       // XXX Match also the source (local) address, and make sure it is not nullptr
-      if (mux_data->id_.dstMatch(ip)) {
+      if (mux_data->id_.srcMatch(ip)) {
 	ENVOY_LOG_MISC(trace, "MUX found corresponding downstream connection on fd {} on mux {}!", it->first, static_cast<void*>(&mux_data->mux_));
 	// Create an upstream Mux for testing purposes if not already created
 	auto upstream_mux = mux_data->mux_.other;
@@ -84,7 +85,7 @@ void MuxSocket::setTransportSocketCallbacks(Network::TransportSocketCallbacks& c
 	}
 
 	mux_lock.unlock();
-	mux_data_ = upstream_mux->addBuffer(~mux_data->id_, true);
+	mux_data_ = upstream_mux->addBuffer(mux_data->id_, true);
 	callbacks_->socket().resetFd(mux_data_->fd_);
 	fd_ = callbacks_->fd();
 	break;
@@ -229,7 +230,7 @@ Mux::~Mux() {
       if (current_reader_ == mux_data) {
 	current_reader_ = nullptr;
       }
-      buffers_.erase(mux_data->id_); // Frees the MuxData object
+      buffers_.erase(~mux_data->id_); // Frees the MuxData object
     } else {
       it++;
     }
@@ -285,7 +286,8 @@ MuxData* Mux::addBuffer(const ShimTuple& id, bool upstream) {
   ASSERT(fd2 >= 0, "dup() failed");
 
   // 'buffers_' owns the MuxData objects!
-  auto pair = buffers_.emplace(id, std::make_unique<MuxData>(*this, id, fd2, upstream));
+  // MuxData 'id_' is in the writer order!
+  auto pair = buffers_.emplace(id, std::make_unique<MuxData>(*this, ~id, fd2, upstream));
   ASSERT(pair.second == true); // inserted
   MuxData* mux_data = pair.first->second.get();
 			       
@@ -323,7 +325,7 @@ void Mux::removeBuffer(int fd) {
     if (current_reader_ == it->second) {
       current_reader_ = nullptr;
     }
-    buffers_.erase(mux_data->id_); // Frees the MuxData
+    buffers_.erase(~mux_data->id_); // Frees the MuxData
     if (muxed_buffers.empty()) {
       ENVOY_LOG_MISC(trace, "MUX no muxed sockets left, closing the mux");
       closeMux_();
@@ -401,8 +403,9 @@ void Mux::readAndDemux(bool upstream) {
 	      auto ip_src = socket_.remoteAddress()->ip();
 	      for (it = buffers_.begin(); it != buffers_.end(); it++) {
 		MuxData* mux_data = it->second.get();
-		// XXX Match also the destination (local) address, and make sure it is not nullptr
-		if (mux_data->id_.srcMatch(ip_src)) {
+		// Upstream 'id_' is in the writer order, it's destination address is the upstream remote address!
+		// XXX Match also the source (local) address, and make sure it is not nullptr
+		if (mux_data->id_.dstMatch(ip_src)) {
 		  ENVOY_LOG_MISC(trace, "MUX found THE upstream connection on fd {} on mux {}!", mux_data->fd_, static_cast<void*>(&mux_data->mux_));
 		  break;
 		}

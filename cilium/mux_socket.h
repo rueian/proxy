@@ -8,6 +8,7 @@
 #include "common/common/logger.h"
 #include "common/common/lock_guard.h"
 #include "common/common/thread.h"
+#include "common/network/address_impl.h"
 
 namespace Envoy {
 namespace Cilium {
@@ -26,38 +27,116 @@ private:
   bool upstream_;
 };
 
-union ShimTuple {
+struct ShimTuple {
+  ShimTuple(const Network::Address::Ip* src, const Network::Address::Ip* dst) {
+    memset(this, 0, sizeof(*this));
+    if (src && dst && src->ipv4() && dst->ipv4()) {
+      family_ = AF_INET;
+      sip4_ = src->ipv4()->address();
+      dip4_ = dst->ipv4()->address();
+    } else if (src && dst && src->ipv6() && dst->ipv6()) {
+      family_ = AF_INET6;
+      sip6_ = src->ipv6()->address();
+      dip6_ = dst->ipv6()->address();
+    } else {
+      throw EnvoyException("mux_socket: Invalid address families");
+    }
+    sport_ = htons(src->port());
+    dport_ = htons(dst->port());
+  }
+
+  ShimTuple(uint8_t family, absl::uint128 src, absl::uint128 dst, uint32_t sport, uint32_t dport) {
+    memset(this, 0, sizeof(*this));
+    sip6_ = src;
+    dip6_ = dst;
+    family_ = family;
+    sport_ = sport;
+    dport_ = dport;
+  }
+
+  // Flip the source and destination addresses and ports
+  ShimTuple operator~() const {
+    return ShimTuple(family_, dip6_, sip6_, dport_, sport_);
+  }
+  
   bool operator==(const ShimTuple& other) const {
     return memcmp(this, &other, sizeof *this) == 0;
   }
-  ShimTuple flip() const {
-    ShimTuple id{};
-    if (tuple_v6.dport_ != 0) /* IPV6 */ {
-      id.tuple_v6.saddr_ = tuple_v6.daddr_;
-      id.tuple_v6.daddr_ = tuple_v6.saddr_;
-      id.tuple_v6.sport_ = tuple_v6.dport_;
-      id.tuple_v6.dport_ = tuple_v6.sport_;
-    } else {
-      id.tuple_v4.saddr_ = tuple_v4.daddr_;
-      id.tuple_v4.daddr_ = tuple_v4.saddr_;
-      id.tuple_v4.sport_ = tuple_v4.dport_;
-      id.tuple_v4.dport_ = tuple_v4.sport_;      
-    }
-    return id;
+
+  bool srcMatch(const Network::Address::Ip* ip) const {
+    return sport_ == htons(ip->port()) &&
+      ((family_ == AF_INET && ip->ipv4() && sip4_ == ip->ipv4()->address()) ||
+       (family_ == AF_INET6 && ip->ipv6() && sip6_ == ip->ipv6()->address()));
   }
-  struct {
-    uint32_t saddr_;
-    uint32_t daddr_;
-    uint16_t sport_;
-    uint16_t dport_;
-  } tuple_v4;
-  struct {
-    absl::uint128 saddr_;
-    absl::uint128 daddr_;
-    uint16_t sport_;
-    uint16_t dport_;
-  } tuple_v6;
-  uint32_t _tuple_[9]; // addresses & ports
+
+  bool dstMatch(const Network::Address::Ip* ip) const {
+    return dport_ == htons(ip->port()) &&
+      ((family_ == AF_INET && ip->ipv4() && dip4_ == ip->ipv4()->address()) ||
+       (family_ == AF_INET6 && ip->ipv6() && dip6_ == ip->ipv6()->address()));
+  }
+
+  operator std::vector<uint32_t>() const {
+    std::vector<uint32_t> key(reinterpret_cast<const uint32_t*>(this), &dport_ + 1);
+    return key;
+  }
+
+  Network::Address::InstanceConstSharedPtr srcAddress() const {
+    union {
+      struct sockaddr_in6 sin6{};
+      struct sockaddr_in sin;
+      struct sockaddr_storage ss;
+    };
+    size_t ss_size;
+
+    ss.ss_family = family_;
+    if (family_ == AF_INET6) {
+      memcpy(static_cast<void*>(&sin6.sin6_addr.s6_addr), static_cast<const void*>(&dip6_), sizeof(sip6_));
+      sin6.sin6_port = sport_;
+      ss_size = sizeof(sin6);
+    } else {
+      ASSERT(family_ == AF_INET);
+      sin.sin_addr.s_addr = sip4_;
+      sin.sin_port = sport_;
+      ss_size = sizeof(sin);
+    }
+    return Network::Address::addressFromSockAddr(ss, ss_size, false);
+  }
+
+  Network::Address::InstanceConstSharedPtr dstAddress() const {
+    union {
+      struct sockaddr_in6 sin6{};
+      struct sockaddr_in sin;
+      struct sockaddr_storage ss;
+    };
+    size_t ss_size;
+
+    ss.ss_family = family_;
+    if (family_ == AF_INET6) {
+      memcpy(static_cast<void*>(&sin6.sin6_addr.s6_addr), static_cast<const void*>(&dip6_), sizeof(dip6_));
+      sin6.sin6_port = dport_;
+      ss_size = sizeof(sin6);
+    } else {
+      ASSERT(family_ == AF_INET);
+      sin.sin_addr.s_addr = dip4_;
+      sin.sin_port = dport_;
+      ss_size = sizeof(sin);
+    }
+    return Network::Address::addressFromSockAddr(ss, ss_size, false);
+  }
+  
+  union {
+    uint32_t sip4_;
+    absl::uint128 sip6_;
+  };
+  union {
+    uint32_t dip4_;
+    absl::uint128 dip6_;
+  };
+  uint8_t  family_;
+  uint8_t  pad1_;
+  uint16_t pad2_;
+  uint32_t sport_;
+  uint32_t dport_; // must be last
 };
 
 struct ShimHeader {

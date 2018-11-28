@@ -2,7 +2,6 @@
 
 #include "common/common/assert.h"
 #include "common/common/empty_string.h"
-#include "common/network/address_impl.h"
 #include "common/network/listen_socket_impl.h"
 #include "envoy/registry/registry.h"
 
@@ -41,9 +40,7 @@ static std::map<int, MuxData*> muxed_buffers GUARDED_BY(mux_lock);
 
 void MuxSocket::setTransportSocketCallbacks(Network::TransportSocketCallbacks& callbacks) {
   callbacks_ = &callbacks;
-
-  Cilium::Mux* upstream_mux = nullptr;
-  ShimTuple id;
+  ASSERT(mux_data_ == nullptr);
 
   if (!upstream_) {
     // Find mux_data_ based on the fd
@@ -62,23 +59,17 @@ void MuxSocket::setTransportSocketCallbacks(Network::TransportSocketCallbacks& c
     // upstream Mux fd.
     auto ip = callbacks_->connection().remoteAddress()->ip();
     // auto ip_src = callbacks_->connection().localAddress()->ip();
-    Thread::LockGuard guard(mux_lock);
+
+    mux_lock.lock();
 
     for (auto it = muxed_buffers.begin(); it != muxed_buffers.end(); it++) {
       MuxData* mux_data = it->second;
-      id = mux_data->id_.flip();
-
       // XXX Match also the source (local) address, and make sure it is not nullptr
-
-      if ((ip->ipv4() && id.tuple_v4.saddr_ == ip->ipv4()->address() &&
-	   id.tuple_v4.sport_ == htons(ip->port())) ||
-	  (ip->ipv6() && id.tuple_v6.saddr_ == ip->ipv6()->address() &&
-	   id.tuple_v6.sport_ == htons(ip->port()))) {
+      if (mux_data->id_.dstMatch(ip)) {
 	ENVOY_LOG_MISC(trace, "MUX found corresponding downstream connection on fd {} on mux {}!", it->first, static_cast<void*>(&mux_data->mux_));
 	// Create an upstream Mux for testing purposes if not already created
-	if (mux_data->mux_.other != nullptr) {
-	  upstream_mux = mux_data->mux_.other;
-	} else {
+	auto upstream_mux = mux_data->mux_.other;
+	if (upstream_mux == nullptr) {
 	  upstream_mux = new Cilium::Mux(callbacks_->connection().dispatcher(), callbacks_->socket(),
 					      // add new connetion callback
 					      [this](Network::ConnectionSocketPtr&& sock) {
@@ -91,17 +82,19 @@ void MuxSocket::setTransportSocketCallbacks(Network::TransportSocketCallbacks& c
 					      true /* upstream mux */);
 	  mux_data->mux_.other = upstream_mux; // Needs lock?
 	}
+
+	mux_lock.unlock();
+	mux_data_ = upstream_mux->addBuffer(~mux_data->id_, true);
+	callbacks_->socket().resetFd(mux_data_->fd_);
+	fd_ = callbacks_->fd();
 	break;
       }
     }
+    if (mux_data_ == nullptr) {
+      mux_lock.unlock();
+    }	  
   }
-  if (mux_data_ != nullptr || upstream_mux) {
-    if (mux_data_ == nullptr && upstream_mux) {
-      mux_data_ = upstream_mux->addBuffer(id, true);
-      callbacks_->socket().resetFd(mux_data_->fd_);
-      fd_ = callbacks_->fd();
-    }
-    ASSERT(mux_data_ != nullptr);
+  if (mux_data_ != nullptr) {
     mux_data_->setReadCallback([this]() {
 	ENVOY_LOG_MISC(trace, "MUX SETTING read buffer ready");
 	callbacks_->setReadBufferReady();
@@ -218,25 +211,8 @@ Mux::Mux(Event::Dispatcher& dispatcher, Network::ConnectionSocket& socket, NewCo
 
 #if 1
   if (!upstream) {
-    // TCP proxy does not connected in the test unless we short-circuit the connection set-up.
-    ShimTuple id{};
-    auto ip = socket_.localAddress()->ip();
-    auto ip_src = socket_.remoteAddress()->ip();
-    if (ip->ipv4()) {
-      id.tuple_v4.daddr_ = ip->ipv4()->address();
-      id.tuple_v4.dport_ = htons(ip->port());
-      id.tuple_v4.saddr_ = ip_src->ipv4()->address();
-      id.tuple_v4.sport_ = htons(ip_src->port());
-    } else if (ip->ipv6()) {
-      id.tuple_v6.daddr_ = ip->ipv6()->address();
-      id.tuple_v6.dport_ = htons(ip->port());
-      id.tuple_v6.saddr_ = ip_src->ipv6()->address();
-      id.tuple_v6.sport_ = htons(ip_src->port());
-    } else {
-      ENVOY_LOG_MISC(trace, "MUX unknown IP address format!");
-      return;
-    }
-    addBuffer(id, upstream_);
+    // TCP proxy does not connect in the test unless we short-circuit the connection set-up.
+    addBuffer(ShimTuple(socket_.remoteAddress()->ip(), socket_.localAddress()->ip()), upstream_);
   }
 #endif
 }
@@ -249,12 +225,11 @@ Mux::~Mux() {
     MuxData* mux_data = it->second;
     if (&mux_data->mux_ == this) {
       ENVOY_LOG_MISC(trace, "MUX found buffer to clean up");
-      std::vector<uint32_t> key(mux_data->id_._tuple_, std::end(mux_data->id_._tuple_));
       it = muxed_buffers.erase(it);
       if (current_reader_ == mux_data) {
 	current_reader_ = nullptr;
       }
-      buffers_.erase(key); // Frees the MuxData object
+      buffers_.erase(mux_data->id_); // Frees the MuxData object
     } else {
       it++;
     }
@@ -303,15 +278,14 @@ void Mux::onClose() {
   file_event_.reset();
 }
 
-// called with 'lock_' held!
+// called with 'lock_' AND 'mux_lock' NOT held!
 MuxData* Mux::addBuffer(const ShimTuple& id, bool upstream) {
   // Create a copy of the socket and pass it to addNewConnection callback.
   int fd2 = dup(socket_.fd());
   ASSERT(fd2 >= 0, "dup() failed");
 
-  std::vector<uint32_t> key(id._tuple_, std::end(id._tuple_));
   // 'buffers_' owns the MuxData objects!
-  auto pair = buffers_.emplace(key, std::make_unique<MuxData>(*this, id, fd2, upstream));
+  auto pair = buffers_.emplace(id, std::make_unique<MuxData>(*this, id, fd2, upstream));
   ASSERT(pair.second == true); // inserted
   MuxData* mux_data = pair.first->second.get();
 			       
@@ -321,36 +295,9 @@ MuxData* Mux::addBuffer(const ShimTuple& id, bool upstream) {
     muxed_buffers.emplace(fd2, mux_data);
   }
   if (!upstream) {
-    struct sockaddr_storage ss_src{}, ss_dst{};
-    size_t ss_size;
     // Call the addNewConnection callback
-    if (id.tuple_v6.dport_ != 0) {
-      struct sockaddr_in6* sin_src = reinterpret_cast<struct sockaddr_in6*>(&ss_src);
-      ss_size = sizeof(*sin_src);
-      sin_src->sin6_family = AF_INET6;
-      memcpy(static_cast<void*>(&sin_src->sin6_addr.s6_addr), static_cast<const void*>(&id.tuple_v6.saddr_), 
-	     sizeof(absl::uint128));
-      sin_src->sin6_port = id.tuple_v6.sport_;
-
-      struct sockaddr_in6* sin_dst = reinterpret_cast<struct sockaddr_in6*>(&ss_dst);
-      sin_dst->sin6_family = AF_INET6;
-      memcpy(static_cast<void*>(&sin_dst->sin6_addr.s6_addr), static_cast<const void*>(&id.tuple_v6.daddr_), 
-	     sizeof(absl::uint128));
-      sin_dst->sin6_port = id.tuple_v6.dport_;
-    } else {
-      struct sockaddr_in* sin_src = reinterpret_cast<struct sockaddr_in*>(&ss_src);
-      ss_size = sizeof(*sin_src);
-      sin_src->sin_family = AF_INET;
-      sin_src->sin_addr.s_addr = id.tuple_v4.saddr_;
-      sin_src->sin_port = id.tuple_v4.sport_;
-
-      struct sockaddr_in* sin_dst = reinterpret_cast<struct sockaddr_in*>(&ss_dst);
-      sin_dst->sin_family = AF_INET;
-      sin_dst->sin_addr.s_addr = id.tuple_v4.daddr_;
-      sin_dst->sin_port = id.tuple_v4.dport_;
-    }
     Network::ConnectionSocketPtr sock =
-      std::make_unique<Network::ConnectionSocketImpl>(fd2, Network::Address::addressFromSockAddr(ss_dst, ss_size, false), Network::Address::addressFromSockAddr(ss_src, ss_size, false));
+      std::make_unique<Network::ConnectionSocketImpl>(fd2, id.dstAddress(), id.srcAddress());
     sock->addOptions(socket_.options()); // copy a reference to the options on the original socket.
     if (socket_.localAddressRestored()) {
       sock->setLocalAddress(sock->localAddress(), true);
@@ -371,12 +318,12 @@ void Mux::removeBuffer(int fd) {
   auto it = muxed_buffers.find(fd);
   if (it != muxed_buffers.end()) {
     ENVOY_LOG_MISC(trace, "MUX found buffer to delete");
-    std::vector<uint32_t> key(it->second->id_._tuple_, std::end(it->second->id_._tuple_));
-    muxed_buffers.erase(it);
+    const auto* mux_data = it->second;
+    muxed_buffers.erase(it); // invalidates 'it'
     if (current_reader_ == it->second) {
       current_reader_ = nullptr;
     }
-    buffers_.erase(key); // Frees the MuxData
+    buffers_.erase(mux_data->id_); // Frees the MuxData
     if (muxed_buffers.empty()) {
       ENVOY_LOG_MISC(trace, "MUX no muxed sockets left, closing the mux");
       closeMux_();
@@ -442,37 +389,20 @@ void Mux::readAndDemux(bool upstream) {
 	    read_buffer_.copyOut(0, sizeof(ShimHeader), &hdr);
 	    read_buffer_.drain(sizeof(ShimHeader));
 	    remaining_read_length_ = hdr.length_;
-	    std::vector<uint32_t> key(hdr.id_._tuple_, std::end(hdr.id_._tuple_));
+	    std::vector<uint32_t> key = hdr.id_;
 #else
 	    remaining_read_length_ = read_buffer_.length();
-	    ShimTuple id{};
-	    auto ip = socket_.localAddress()->ip();
-	    auto ip_src = socket_.remoteAddress()->ip();
-	    if (ip->ipv4()) {
-	      id.tuple_v4.daddr_ = ip->ipv4()->address();
-	      id.tuple_v4.dport_ = htons(ip->port());
-	      id.tuple_v4.saddr_ = ip_src->ipv4()->address();
-	      id.tuple_v4.sport_ = htons(ip_src->port());
-	    } else if (ip->ipv6()) {
-	      id.tuple_v6.daddr_ = ip->ipv6()->address();
-	      id.tuple_v6.dport_ = htons(ip->port());
-	      id.tuple_v6.saddr_ = ip_src->ipv6()->address();
-	      id.tuple_v6.sport_ = htons(ip_src->port());
-	    } else {
-	      ENVOY_LOG_MISC(trace, "MUX unknown IP address format!");
-	      return;
-	    }
-	    std::vector<uint32_t> key(id._tuple_, std::end(id._tuple_));
+	    ShimTuple id(socket_.remoteAddress()->ip(), socket_.localAddress()->ip());
+	    std::vector<uint32_t> key = id;
 #endif
 	    auto it = buffers_.find(key);
 	    if (upstream_ && it == buffers_.end()) {
+	      // upstream testing has a random source port and host address, match with the remote address only
+	      auto ip_src = socket_.remoteAddress()->ip();
 	      for (it = buffers_.begin(); it != buffers_.end(); it++) {
 		MuxData* mux_data = it->second.get();
 		// XXX Match also the destination (local) address, and make sure it is not nullptr
-		if ((ip->ipv4() && mux_data->id_.tuple_v4.saddr_ == ip_src->ipv4()->address() &&
-		     mux_data->id_.tuple_v4.sport_ == htons(ip_src->port())) ||
-		    (ip->ipv6() && mux_data->id_.tuple_v6.saddr_ == ip_src->ipv6()->address() &&
-		     mux_data->id_.tuple_v6.sport_ == htons(ip_src->port()))) {
+		if (mux_data->id_.srcMatch(ip_src)) {
 		  ENVOY_LOG_MISC(trace, "MUX found THE upstream connection on fd {} on mux {}!", mux_data->fd_, static_cast<void*>(&mux_data->mux_));
 		  break;
 		}

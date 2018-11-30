@@ -158,7 +158,11 @@ Network::IoResult MuxSocket::doWrite(Buffer::Instance& buffer, bool end_stream) 
 	ENVOY_CONN_LOG(trace, "{}MuxSocket write shutting down fd: {}", callbacks_->connection(), upstream_ ? 'U' : 'D', fd_);
         // Ignore the result. This can only fail if the connection failed. In that case, the
         // error will be detected on the next read, and dealt with appropriately.
+#if 1
+	mux_data_->mux_.prependAndWrite(mux_data_->id_, buffer);
+#else
         ::shutdown(fd_, SHUT_WR);
+#endif
         shutdown_ = true;
       }
       action = Network::PostIoAction::KeepOpen;
@@ -439,10 +443,16 @@ void Mux::readAndDemux(bool upstream) {
 }
 
 Api::SysCallIntResult Mux::prependAndWrite(const ShimTuple& /*id*/, Buffer::Instance& buffer) {
+  Thread::LockGuard guard(lock_);
   if (buffer.length() == 0) {
+#if 1
+    // Do half close for testing purposes if this is the last writer on the mux.
+    if (buffers_.size() == 1) {
+      ::shutdown(socket_.fd(), SHUT_WR);
+    }
+#endif
     return {0, 0};
   }
-  Thread::LockGuard guard(lock_);
 
   int len = std::min(int(buffer.length()), 16384); // Limit for fearness?
 #if 0

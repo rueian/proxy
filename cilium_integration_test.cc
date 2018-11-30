@@ -401,6 +401,10 @@ static_resources:
     filter_chains:
     - transport_socket:
         name: cilium.transport_sockets.mux
+      filter_chain_match:
+        prefix_ranges:
+        - address_prefix: {{ ntop_ip_loopback_address }}
+          prefix_len: 32
       filters:
       - name: cilium.network
         config:
@@ -904,6 +908,10 @@ static_resources:
     filter_chains:
     - transport_socket:
         name: cilium.transport_sockets.mux
+      filter_chain_match:
+        prefix_ranges:
+        - address_prefix: {{ ntop_ip_loopback_address }}
+          prefix_len: 32
       filters:
       - name: cilium.network
         config:

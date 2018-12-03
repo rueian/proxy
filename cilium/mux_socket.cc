@@ -271,20 +271,6 @@ void Mux::onWrite() {
 void Mux::onTimeout() {
   ENVOY_LOG_MISC(trace, "{}MUX test: timeout", upstream_ ? 'U' : 'D');
   timer_.reset();
-#if 0
-  // Create a copy of the socket and pass it to newConnection callback.
-  int fd2 = dup(socket_.fd());
-  ASSERT(fd2 >= 0, "dup() failed");
-
-  Network::ConnectionSocketPtr sock = std::make_unique<Network::ConnectionSocketImpl>(fd2, socket_.localAddress(), socket_.remoteAddress());
-  sock->addOptions(socket_.options()); // copy a referene to the options on the original socket.
-  if (socket_.localAddressRestored()) {
-    sock->setLocalAddress(socket_.localAddress(), true);
-  }
-  ENVOY_LOG_MISC(trace, "{}MUX test: newConnection on dupped fd {}", upstream_ ? 'U' : 'D', fd2);
-
-  addNewConnection_(std::move(sock));
-#endif
 }
 
 void Mux::onClose() {

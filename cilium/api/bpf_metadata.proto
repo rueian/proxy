@@ -8,4 +8,7 @@ message BpfMetadata {
 
   // 'true' if the filter is on ingress listener, 'false' for egress listener.
   bool is_ingress = 2;
+
+  // 'true' if kTLS multiplexed transport should be used
+  bool use_kTLS = 3;
 }

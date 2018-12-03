@@ -97,7 +97,7 @@ createPolicyMap(Server::Configuration::FactoryContext& context) {
 } // namespace
 
 Config::Config(const ::cilium::BpfMetadata &config, Server::Configuration::ListenerFactoryContext& context)
-    : is_ingress_(config.is_ingress()) {
+    : is_ingress_(config.is_ingress()), use_kTLS_(config.use_ktls()) {
   // Note: all instances use the bpf root of the first filter with non-empty bpf_root instantiated!
   std::string bpf_root = config.bpf_root();
   if (bpf_root.length() > 0) {
@@ -193,34 +193,64 @@ Network::FilterStatus Instance::onAccept(Network::ListenerFilterCallbacks &cb) {
     }
   }
 
-  // Terminate the accept filter chain when the socket gets closed.
-  ENVOY_LOG(debug, "MUX test: New connection accepted");
-
   cb_ = &cb;
 
-  mux_ = std::make_unique<Cilium::Mux>(cb_->dispatcher(), socket,
-				       // add new connetion callback
-				       [this](Network::ConnectionSocketPtr&& sock) {
-					 // Set detected application protocol to "tcp" if policy needs proxylib
-					 const auto option = Cilium::GetSocketOption(sock->options());
-					 if (option) {
-					   std::string l7proto;
-					   if (option->npmap_->useProxylib(option->pod_ip_, option->ingress_, option->port_, l7proto)) {
-					     std::vector<absl::string_view> protocols{"tcp"};
-					     sock->setRequestedApplicationProtocols(protocols);
-					   }
-					 }
-					 cb_->newConnection(std::move(sock));
-				       },
-				       // close accepted connection callback
-				       [this]() {
-					 stopped_ = false;
-					 cb_->continueFilterChain(false);
-				       },
-				       false /* downstream mux */);
+  if (config_->use_kTLS_) {
+    // Terminate the accept filter chain when the socket gets closed.
+    ENVOY_LOG(debug, "MUX test: New connection accepted");
 
+    mux_ = std::make_unique<Cilium::Mux>(cb_->dispatcher(), socket,
+					 // add new connetion callback
+					 [this](Network::ConnectionSocketPtr&& sock) {
+					   // Set detected application protocol to "tcp" if policy needs proxylib
+					   const auto option = Cilium::GetSocketOption(sock->options());
+					   if (option) {
+					     std::string l7proto;
+					     if (option->npmap_->useProxylib(option->pod_ip_, option->ingress_, option->port_, l7proto)) {
+					       std::vector<absl::string_view> protocols{"tcp"};
+					       sock->setRequestedApplicationProtocols(protocols);
+					     }
+					   }
+					   cb_->newConnection(std::move(sock));
+					 },
+					 // close accepted connection callback
+					 [this]() {
+					   stopped_ = false;
+					   cb_->continueFilterChain(false);
+					 },
+					 false /* downstream mux */);
+
+    stopped_ = true;
+    return Network::FilterStatus::StopIteration;
+  }
+#if 1
+  // Create a copy of the socket and pass it to newConnection callback.
+  int fd2 = dup(socket.fd());
+  ASSERT(fd2 >= 0, "dup() failed");
+
+  Network::ConnectionSocketPtr sock = std::make_unique<Network::ConnectionSocketImpl>(fd2, socket.localAddress(), socket.remoteAddress());
+  sock->addOptions(socket.options()); // copy a referene to the options on the original socket.
+  if (socket.localAddressRestored()) {
+    sock->setLocalAddress(socket.localAddress(), true);
+  }
+  ENVOY_LOG_MISC(trace, "newConnection on dupped fd {}", fd2);
+
+  // Set detected application protocol to "tcp" if policy needs proxylib
+  // TODO: Check we don't collide with tls_inspector!
+  const auto option = Cilium::GetSocketOption(sock->options());
+  if (option) {
+    std::string l7proto;
+    if (option->npmap_->useProxylib(option->pod_ip_, option->ingress_, option->port_, l7proto)) {
+      std::vector<absl::string_view> protocols{"tcp"};
+      sock->setRequestedApplicationProtocols(protocols);
+    }
+  }
   stopped_ = true;
+  cb_->newConnection(std::move(sock));
   return Network::FilterStatus::StopIteration;
+#else
+  return Network::FilterStatus::Continue;
+#endif
 }
 
 } // namespace BpfMetadata

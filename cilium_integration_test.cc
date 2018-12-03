@@ -422,6 +422,7 @@ static_resources:
       name: test_bpf_metadata
       config:
         is_ingress: {0}
+        use_kTLS: true
     filter_chains:
     - transport_socket:
         name: cilium.transport_sockets.mux
@@ -1177,6 +1178,7 @@ static_resources:
       name: test_bpf_metadata
       config:
         is_ingress: {0}
+        use_kTLS: true
     filter_chains:
     - transport_socket:
         name: cilium.transport_sockets.mux
@@ -1379,6 +1381,7 @@ static_resources:
       name: test_bpf_metadata
       config:
         is_ingress: {0}
+        use_kTLS: true
     filter_chains:
     - transport_socket:
         name: cilium.transport_sockets.mux

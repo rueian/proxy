@@ -11,16 +11,23 @@ namespace Cilium {
 std::string MuxSocketName("cilium.transport_sockets.mux");
 
 typedef std::function<void()> ReadCB;
+typedef std::function<void()> DeleteCB;
 
 // Data for a mux keyed by the fd
 // Not sure yet if access from multiple threads is actually needed
 class MuxData {
 public:
   MuxData(Mux& mux, const ShimTuple& id, int fd, bool upstream) : mux_(mux), id_(id), fd_(fd), upstream_(upstream) {}
+  ~MuxData() {
+    if (deleteCallback_) {
+      deleteCallback_();
+    }
+  }
 
-  void setReadCallback(ReadCB cb) {
-    ENVOY_LOG_MISC(trace, "{}MUX setting read callback", upstream_ ? 'U' : 'D');
+  void setCallbacks(ReadCB cb, DeleteCB delCb) {
+    ENVOY_LOG_MISC(trace, "{}MUX setting callbacks", upstream_ ? 'U' : 'D');
     readCallback_ = cb;
+    deleteCallback_ = delCb;
   }
 
   Mux& mux_;
@@ -28,6 +35,7 @@ public:
   int fd_;
   bool upstream_;
   ReadCB readCallback_{};
+  DeleteCB deleteCallback_{};
 
   mutable Thread::MutexBasicLockable lock_;
   Buffer::OwnedImpl read_buffer_ GUARDED_BY(lock_);  // Input frames ready to be read
@@ -96,9 +104,13 @@ void MuxSocket::setTransportSocketCallbacks(Network::TransportSocketCallbacks& c
     }	  
   }
   if (mux_data_ != nullptr) {
-    mux_data_->setReadCallback([this]() {
+    mux_data_->setCallbacks([this]() {
 	ENVOY_LOG_MISC(trace, "{}MUX SETTING read buffer ready", upstream_ ? 'U' : 'D');
 	callbacks_->setReadBufferReady();
+      },
+      [this]() {
+	ENVOY_LOG_MISC(trace, "{}MUX ERASED", upstream_ ? 'U' : 'D');
+	mux_data_ = nullptr;
       });
   }
 }

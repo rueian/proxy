@@ -197,6 +197,23 @@ resources:
         - headers: [ { name: ':path', exact_match: '/only-2-allowed' } ]
 )EOF";
 
+const std::string TCP_POLICY = R"EOF(version_info: "0"
+resources:
+- "@type": type.googleapis.com/cilium.NetworkPolicy
+  name: '{{ ntop_ip_loopback_address }}'
+  policy: 3
+  ingress_per_port_policies:
+  - port: 80
+    rules:
+    - remote_policies: [ 1 ]
+      l7_proto: "test.passer"
+  egress_per_port_policies:
+  - port: 80
+    rules:
+    - remote_policies: [ 1 ]
+      l7_proto: "test.passer"
+)EOF";
+
 namespace Filter {
 namespace BpfMetadata {
 
@@ -206,21 +223,24 @@ public:
     : Config(config, context) {}
   ~TestConfig() {
     hostmap.reset();
+    npmap.reset();
   }
 
   bool getMetadata(Network::ConnectionSocket &socket) override {
     // fake setting the local address. It remains the same as required by the test infra, but it will be marked as restored
     // as required by the original_dst cluster.
     socket.setLocalAddress(original_dst_address, true);
+
     if (is_ingress_) {
       std::string pod_ip = original_dst_address->ip()->addressAsString();
       ENVOY_LOG_MISC(debug, "INGRESS POD_IP: {}", pod_ip);
-      socket.addOption(std::make_shared<Cilium::SocketOption>(maps_, 1, 173, true, 80, 10000, std::move(pod_ip)));
+      socket.addOption(std::make_shared<Cilium::SocketOption>(npmap_, maps_, 1, 173, true, 80, 10000, std::move(pod_ip)));
     } else {
       std::string pod_ip = socket.localAddress()->ip()->addressAsString();
       ENVOY_LOG_MISC(debug, "EGRESS POD_IP: {}", pod_ip);
-      socket.addOption(std::make_shared<Cilium::SocketOption>(maps_, 173, hosts_->resolve(socket.localAddress()->ip()), false, 80, 10001, std::move(pod_ip)));
+      socket.addOption(std::make_shared<Cilium::SocketOption>(npmap_, maps_, 173, hosts_->resolve(socket.localAddress()->ip()), false, 80, 10001, std::move(pod_ip)));
     }
+
     return true;
   }
 };
@@ -260,6 +280,23 @@ createHostMap(const std::string& config, Server::Configuration::ListenerFactoryC
     });
 }
 
+std::shared_ptr<const Cilium::NetworkPolicyMap>
+createPolicyMap(const std::string& config, Server::Configuration::FactoryContext& context) {
+  return context.singletonManager().getTyped<const Cilium::NetworkPolicyMap>(
+      "cilium_network_policy_singleton", [&config, &context] {
+        // File subscription.
+	std::string path = TestEnvironment::writeStringToFileForTest("network_policy.yaml", config);
+	ENVOY_LOG_MISC(debug, "Loading Cilium Network Policy from file \'{}\' instead of using gRPC", path);
+        Envoy::Config::Utility::checkFilesystemSubscriptionBackingPath(path);
+        Envoy::Config::SubscriptionStats stats = Envoy::Config::Utility::generateStats(context.scope());
+        auto subscription = std::make_unique<Envoy::Config::FilesystemSubscriptionImpl<cilium::NetworkPolicy>>(context.dispatcher(), path, stats);
+       
+        auto map = std::make_shared<Cilium::NetworkPolicyMap>(std::move(subscription), context.threadLocal());
+	map->startSubscription();
+	return map;
+      });
+}
+
 } // namespace
 
 /**
@@ -275,6 +312,10 @@ public:
     // Create the file-based policy map before the filter is created, so that the singleton
     // is set before the gRPC subscription is attempted.
     hostmap = createHostMap(host_map_config, context);
+    // Create the file-based policy map before the filter is created, so that the singleton
+    // is set before the gRPC subscription is attempted.
+    npmap = createPolicyMap(policy_config, context);
+
 
     auto config = std::make_shared<Filter::BpfMetadata::TestConfig>(MessageUtil::downcastAndValidate<const ::cilium::BpfMetadata&>(proto_config), context);
 
@@ -304,23 +345,6 @@ static Registry::RegisterFactory<TestBpfMetadataConfigFactory,
 
 namespace Cilium {
 
-std::shared_ptr<const Cilium::NetworkPolicyMap>
-createPolicyMap(const std::string& config, Server::Configuration::FactoryContext& context) {
-  return context.singletonManager().getTyped<const Cilium::NetworkPolicyMap>(
-      "cilium_network_policy_singleton", [&config, &context] {
-        // File subscription.
-	std::string path = TestEnvironment::writeStringToFileForTest("network_policy.yaml", config);
-	ENVOY_LOG_MISC(debug, "Loading Cilium Network Policy from file \'{}\' instead of using gRPC", path);
-        Envoy::Config::Utility::checkFilesystemSubscriptionBackingPath(path);
-        Envoy::Config::SubscriptionStats stats = Envoy::Config::Utility::generateStats(context.scope());
-        auto subscription = std::make_unique<Envoy::Config::FilesystemSubscriptionImpl<cilium::NetworkPolicy>>(context.dispatcher(), path, stats);
-       
-        auto map = std::make_shared<Cilium::NetworkPolicyMap>(std::move(subscription), context.threadLocal());
-	map->startSubscription();
-	return map;
-      });
-}
-
 class TestConfigFactory
     : public Server::Configuration::NamedHttpFilterConfigFactory {
 public:
@@ -334,10 +358,6 @@ public:
   Http::FilterFactoryCb
   createFilterFactoryFromProto(const Protobuf::Message& proto_config, const std::string&,
                                Server::Configuration::FactoryContext& context) override {
-    // Create the file-based policy map before the filter is created, so that the singleton
-    // is set before the gRPC subscription is attempted.
-    npmap = createPolicyMap(policy_config, context);
-
     auto config = std::make_shared<Cilium::Config>(
         MessageUtil::downcastAndValidate<const ::cilium::L7Policy&>(proto_config), context);
     return [config](
@@ -409,6 +429,21 @@ static_resources:
         prefix_ranges:
         - address_prefix: {{ ntop_ip_loopback_address }}
           prefix_len: 32
+        application_protocols: "tcp"
+      filters:
+      - name: cilium.network
+        config:
+          proxylib: "proxylib/libcilium.so"
+      - name: envoy.tcp_proxy
+        config:
+          stat_prefix: tcp_stats
+          cluster: cluster1
+    - transport_socket:
+        name: cilium.transport_sockets.mux
+      filter_chain_match:
+        prefix_ranges:
+        - address_prefix: {{ ntop_ip_loopback_address }}
+          prefix_len: 32
       filters:
       - name: cilium.network
         config:
@@ -453,7 +488,6 @@ public:
     }
   }
   ~CiliumHttpIntegrationTest() {
-    npmap.reset();
   }  
   /**
    * Initializer for an individual integration test.
@@ -868,64 +902,6 @@ TEST_P(CiliumIntegrationEgressTest, L3DeniedPath) {
 // Cilium filters with TCP proxy
 //
 
-// params: is_ingress ("true", "false")
-const std::string cilium_tcp_proxy_config_fmt = R"EOF(
-admin:
-  access_log_path: /dev/null
-  address:
-    socket_address:
-      address: 127.0.0.1
-      port_value: 0
-static_resources:
-  clusters:
-  - name: cluster1
-    type: ORIGINAL_DST
-    lb_policy: ORIGINAL_DST_LB
-    connect_timeout:
-      seconds: 1
-    hosts:
-    - socket_address:
-        address: 127.0.0.1
-        port_value: 0
-    transport_socket:
-      name: cilium.transport_sockets.mux
-  - name: xds-grpc-cilium
-    connect_timeout:
-      seconds: 5
-    type: STATIC
-    lb_policy: ROUND_ROBIN
-    http2_protocol_options:
-    hosts:
-    - pipe:
-        path: /var/run/cilium/xds.sock
-  listeners:
-    name: listener_0
-    address:
-      socket_address:
-        address: 127.0.0.1
-        port_value: 0
-    listener_filters:
-      name: test_bpf_metadata
-      config:
-        is_ingress: {0}
-    filter_chains:
-    - transport_socket:
-        name: cilium.transport_sockets.mux
-      filter_chain_match:
-        prefix_ranges:
-        - address_prefix: {{ ntop_ip_loopback_address }}
-          prefix_len: 32
-      filters:
-      - name: cilium.network
-        config:
-          proxylib: "proxylib/libcilium.so"
-          l7_proto: "test.passer"
-      - name: envoy.tcp_proxy
-        config:
-          stat_prefix: tcp_stats
-          cluster: cluster1
-)EOF";
-
 class CiliumTcpIntegrationTest : public BaseIntegrationTest,
                                  public testing::TestWithParam<Network::Address::IpVersion> {
 public:
@@ -936,6 +912,7 @@ public:
   }
 
   void initialize() override {
+    policy_config = TestEnvironment::substitute(TCP_POLICY, GetParam());
     config_helper_.renameListener("tcp_proxy");
     BaseIntegrationTest::initialize();
     // Pass the fake upstream address to the cilium bpf filter that will set it as an "original destination address".
@@ -957,7 +934,7 @@ public:
 
 class CiliumTcpProxyIntegrationTest : public CiliumTcpIntegrationTest {
 public:
-  CiliumTcpProxyIntegrationTest() : CiliumTcpIntegrationTest(fmt::format(TestEnvironment::substitute(cilium_tcp_proxy_config_fmt, GetParam()), "true")) {}
+  CiliumTcpProxyIntegrationTest() : CiliumTcpIntegrationTest(fmt::format(TestEnvironment::substitute(cilium_proxy_config_fmt, GetParam()), "true")) {}
 };
 
 INSTANTIATE_TEST_CASE_P(IpVersions, CiliumTcpProxyIntegrationTest,

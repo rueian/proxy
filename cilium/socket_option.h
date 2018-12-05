@@ -51,6 +51,31 @@ public:
   bool ingress_;
 };
 
+typedef std::function<bool(Network::Socket& socket)> ConnectCB;
+
+class MuxListenSocketOption : public SocketMarkOption {
+public:
+  MuxListenSocketOption(bool ingress, ConnectCB cb) : SocketMarkOption(0, ingress), connect_cb_(cb) {
+    ENVOY_LOG(debug, "Cilium MuxListenSocketOption(): ingress: {}", ingress);
+  }
+
+  bool setOption(Network::Socket& socket, envoy::api::v2::core::SocketOption::SocketState state) const override {
+    ENVOY_LOG_MISC(trace, "MUX setting listener socket options");
+    auto ok = SocketMarkOption::setOption(socket, state);
+
+    // Call connect callback after the listener is listening.
+    if (state == envoy::api::v2::core::SocketOption::STATE_LISTENING) {
+      return ok && connect_cb_(socket);
+    } else {
+      ENVOY_LOG_MISC(trace, "STATE NOT LISTENING");
+    }
+
+    return ok;
+  }
+
+  ConnectCB connect_cb_;
+};
+
 class SocketOption : public SocketMarkOption {
 public:
 SocketOption(std::shared_ptr<const Cilium::NetworkPolicyMap> npmap, const ProxyMapSharedPtr& maps, uint32_t source_identity, uint32_t destination_identity, bool ingress, uint16_t port, uint16_t proxy_port, std::string&& pod_ip)

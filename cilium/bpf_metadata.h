@@ -7,6 +7,7 @@
 #include "envoy/server/filter_config.h"
 
 #include "common/common/logger.h"
+#include "common/network/listen_socket_impl.h"
 
 #include "cilium/api/bpf_metadata.pb.h"
 #include "cilium/proxymap.h"
@@ -35,6 +36,9 @@ public:
   std::shared_ptr<const Cilium::NetworkPolicyMap> npmap_;
   Cilium::ProxyMapSharedPtr maps_{};
   std::shared_ptr<const Cilium::PolicyHostMap> hosts_;
+
+  Thread::MutexBasicLockable lock_;
+  std::unique_ptr<Network::ClientSocketImpl> upstream_socket_ GUARDED_BY(lock_);
 };
 
 typedef std::shared_ptr<Config> ConfigSharedPtr;
@@ -59,8 +63,8 @@ private:
   const ConfigSharedPtr config_;
   bool stopped_{false};
   Network::ListenerFilterCallbacks* cb_{};
-  Cilium::MuxPtr mux_;
   Cilium::MuxPtr upstream_mux_;
+  Cilium::MuxPtr mux_;
 };
 
 } // namespace BpfMetadata

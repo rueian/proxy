@@ -3,7 +3,6 @@
 
 #include <string>
 
-#include "envoy/network/listen_socket.h"
 #include "envoy/registry/registry.h"
 #include "envoy/singleton/manager.h"
 
@@ -34,7 +33,29 @@ public:
     // Set the socket mark option for the listen socket.
     // Can use identity 0 on the listen socket option, as the bpf datapath is only interested
     // in whether the proxy is ingress, egress, or if there is no proxy at all.
-    context.addListenSocketOption(std::make_shared<Cilium::SocketMarkOption>(0, config->is_ingress_));
+    auto* listenerConfig = &context.listenerConfig();
+    context.addListenSocketOption(std::make_shared<Cilium::MuxListenSocketOption>(
+	config->is_ingress_,
+	[config, listenerConfig](Network::Socket& socket) -> bool {
+	  if (config->use_kTLS_) {
+	    Thread::LockGuard guard(config->lock_);
+	    if (!config->upstream_socket_) {
+	      ENVOY_LOG_MISC(trace, "UPSTREAM MUX creating socket for {}, fd {}!", listenerConfig->name(), socket.fd());
+	      // Get the listening address and create a socket connecting to it.
+	      config->upstream_socket_ = std::make_unique<Network::ClientSocketImpl>(listenerConfig->socket().localAddress());
+	      ENVOY_LOG_MISC(trace, "UPSTREAM MUX socket {} CONNECTING!", config->upstream_socket_->fd());
+	      const Api::SysCallIntResult result = config->upstream_socket_->remoteAddress()->connect(config->upstream_socket_->fd());
+	      if (result.rc_ == -1 && result.errno_ != EINPROGRESS) {
+		ENVOY_LOG_MISC(debug, "UPSTREAM MUX connect failure: {}", strerror(result.errno_));
+		config->upstream_socket_.reset(nullptr);
+		return false;
+	      }
+	    }
+	  } else {
+	    ENVOY_LOG_MISC(trace, "NOT USING MUX for {}", listenerConfig->name());
+	  }
+	  return true;
+	}));
 
     return [config](Network::ListenerFilterManager &filter_manager) mutable -> void {
       filter_manager.addAcceptFilter(std::make_unique<Filter::BpfMetadata::Instance>(config));
@@ -150,8 +171,9 @@ bool Config::getMetadata(Network::ConnectionSocket& socket) {
   return ok;
 }
 
-Instance::Instance(const ConfigSharedPtr& config) : config_(config) {
-  // Should create upstream mux here and connect it to the listening address
+Instance::Instance(const ConfigSharedPtr& config)
+    : config_(config) {
+  ENVOY_LOG_MISC(trace, "UPSTREAM MUX creating instance");
 }
 
 Network::FilterStatus Instance::onAccept(Network::ListenerFilterCallbacks &cb) {
@@ -196,8 +218,24 @@ Network::FilterStatus Instance::onAccept(Network::ListenerFilterCallbacks &cb) {
   cb_ = &cb;
 
   if (config_->use_kTLS_) {
-    // Terminate the accept filter chain when the socket gets closed.
-    ENVOY_LOG(debug, "MUX test: New connection accepted");
+    // Create the upstream mux on the same worker thread that accepts the downstream mux
+    // Only one worker thread creates the upstream_socket_, so we only get one
+    // worker thread ever accepting a kTLS mux connection!
+    ENVOY_LOG_MISC(trace, "UPSTREAM MUX creating MUX!");
+    upstream_mux_ = std::make_unique<Cilium::Mux>(cb_->dispatcher(),
+						  *config_->upstream_socket_,
+						  // add new connetion callback
+						  [](Network::ConnectionSocketPtr&& sock) {
+						    ENVOY_LOG_MISC(trace, "UPSTREAM MUX new connection callback on fd {}!", sock->fd());
+						  },
+						  // close accepted connection callback
+						  []() {
+						    ENVOY_LOG_MISC(trace, "UPSTREAM MUX close MUX connection callback!");
+						  },
+						  true /* upstream mux */);
+
+    // Pass the connection to a new mux instance
+    ENVOY_LOG(debug, "MUX test: New connection accepted on fd {}", socket.fd());
 
     mux_ = std::make_unique<Cilium::Mux>(cb_->dispatcher(), socket,
 					 // add new connetion callback
@@ -221,22 +259,28 @@ Network::FilterStatus Instance::onAccept(Network::ListenerFilterCallbacks &cb) {
 					 false /* downstream mux */);
 
     stopped_ = true;
+
+    // TODO: Register the socket pair with sockmap!
+    
     return Network::FilterStatus::StopIteration;
   }
 #if 0
+  // Envoy inserts tls_inspector due to the setting of requiredApplicationProtocol to "tcp"
+  // Some integrations tests fail with the tls_inspector inline, so we have stop
+  // iteration and pass the connection on to bypass the tls_inspector filter.
+
   // Create a copy of the socket and pass it to newConnection callback.
   int fd2 = dup(socket.fd());
   ASSERT(fd2 >= 0, "dup() failed");
 
   Network::ConnectionSocketPtr sock = std::make_unique<Network::ConnectionSocketImpl>(fd2, socket.localAddress(), socket.remoteAddress());
-  sock->addOptions(socket.options()); // copy a referene to the options on the original socket.
+  sock->addOptions(socket.options()); // copy a reference to the options on the original socket.
   if (socket.localAddressRestored()) {
     sock->setLocalAddress(socket.localAddress(), true);
   }
   ENVOY_LOG_MISC(trace, "newConnection on dupped fd {}", fd2);
 
   // Set detected application protocol to "tcp" if policy needs proxylib
-  // TODO: Check we don't collide with tls_inspector!
   const auto option = Cilium::GetSocketOption(sock->options());
   if (option) {
     std::string l7proto;

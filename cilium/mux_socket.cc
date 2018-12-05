@@ -227,7 +227,7 @@ Mux::Mux(Event::Dispatcher& dispatcher, Network::ConnectionSocket& socket, NewCo
   timer_ = dispatcher.createTimer([this]() -> void { onTimeout(); });
   timer_->enableTimer(std::chrono::milliseconds(1));
 
-#if 1
+#if 0
   if (!upstream) {
     // TCP proxy does not connect in the test unless we short-circuit the connection set-up.
     addBuffer(ShimTuple(socket_.remoteAddress()->ip(), socket_.localAddress()->ip()), upstream_);
@@ -389,10 +389,8 @@ void Mux::readAndDemux(bool upstream) {
 
 	  // Do we have enough data for the next shim header?
 	  if (read_buffer_.length() >= sizeof(ShimHeader)) {
-#if 0
-	    ShimHeader hdr{};
-	    read_buffer_.copyOut(0, sizeof(ShimHeader), &hdr);
-	    read_buffer_.drain(sizeof(ShimHeader));
+#if 1
+	    ShimHeader hdr(read_buffer_);
 	    remaining_read_length_ = hdr.length_;
 	    std::vector<uint32_t> key = hdr.id_;
 #else
@@ -427,7 +425,7 @@ void Mux::readAndDemux(bool upstream) {
 	    } else if (remaining_read_length_ > 0) {
 	      // New connection?
 	      ENVOY_LOG_MISC(trace, "{}MUX did NOT find a buffer, creating a new one for frame length {}", upstream_ ? 'U' : 'D', remaining_read_length_);
-#if 0
+#if 1
 	      current_reader_ = addBuffer(hdr.id_, upstream_);
 #else
 	      current_reader_ = addBuffer(id, upstream_);
@@ -440,10 +438,10 @@ void Mux::readAndDemux(bool upstream) {
   } while (true);
 }
 
-Api::SysCallIntResult Mux::prependAndWrite(const ShimTuple& /*id*/, Buffer::Instance& buffer) {
+Api::SysCallIntResult Mux::prependAndWrite(const ShimTuple& id, Buffer::Instance& buffer) {
   Thread::LockGuard guard(lock_);
   if (buffer.length() == 0) {
-#if 1
+#if 0
     // Do half close for testing purposes if this is the last writer on the mux.
     if (buffers_.size() == 1) {
       ::shutdown(socket_.fd(), SHUT_WR);
@@ -453,12 +451,11 @@ Api::SysCallIntResult Mux::prependAndWrite(const ShimTuple& /*id*/, Buffer::Inst
   }
 
   int len = std::min(int(buffer.length()), 16384); // Limit for fearness?
-#if 0
+#if 1
   // Prepend a shim header for the data
-  ShimHeader shim;
-  shim.length_ = len;
-  shim.id_ = id;
+  ShimHeader shim(id, len);
   write_buffer_.add(&shim, sizeof(shim));
+  write_buffer_.move(buffer, len);
 
   Api::SysCallIntResult result = write_buffer_.write(socket_.fd());
   ENVOY_LOG_MISC(trace, "SHIM write returns: {}", result.rc_);
@@ -467,20 +464,22 @@ Api::SysCallIntResult Mux::prependAndWrite(const ShimTuple& /*id*/, Buffer::Inst
     if (result.errno_ != EAGAIN) {
       ENVOY_LOG_MISC(trace, "write error: {} ({})", result.errno_, strerror(result.errno_));
     }
+#if 0
     // Remove the added Shim from the buffer on error
     Buffer::OwnedImpl temp;
     temp.move(write_buffer_, write_buffer_.length() - sizeof(shim));
     write_buffer_.drain(sizeof(shim));
     write_buffer_.move(temp);
-
+#endif
     return result;
   }
-#endif
+#else
 
   write_buffer_.move(buffer, len);
   Api::SysCallIntResult result = write_buffer_.write(socket_.fd());
   ENVOY_LOG_MISC(trace, "{}MUX write returns: {}", upstream_ ? 'U' : 'D', result.rc_);
   // We keep the data in the buffer, so pretend we sent it.
+#endif
   return {len, 0};
 }
 

@@ -401,6 +401,13 @@ static_resources:
     - socket_address:
         address: 127.0.0.1
         port_value: 0
+  - name: cluster2
+    type: ORIGINAL_DST
+    lb_policy: ORIGINAL_DST_LB
+    connect_timeout:
+      seconds: 1
+    transport_socket:
+      name: cilium.transport_sockets.mux
   - name: xds-grpc-cilium
     connect_timeout:
       seconds: 5
@@ -411,7 +418,7 @@ static_resources:
     - pipe:
         path: /var/run/cilium/xds.sock
   listeners:
-    name: http
+  - name: http
     address:
       socket_address:
         address: 127.0.0.1
@@ -461,6 +468,58 @@ static_resources:
               routes:
               - route:
                   cluster: cluster1
+                  max_grpc_timeout:
+                    seconds: 0
+                    nanos: 0
+                match:
+                  prefix: "/"
+  - name: ktls-mux
+    address:
+      socket_address:
+        address: 127.0.0.1
+        port_value: 4321
+    listener_filters:
+      name: test_bpf_metadata
+      config:
+        is_ingress: false
+        use_kTLS: true
+    filter_chains:
+    - transport_socket:
+        name: cilium.transport_sockets.mux
+      filter_chain_match:
+        application_protocols: "tcp"
+      filters:
+      - name: cilium.network
+        config:
+          proxylib: "proxylib/libcilium.so"
+      - name: envoy.tcp_proxy
+        config:
+          stat_prefix: tcp_stats
+          cluster: cluster2
+    - transport_socket:
+        name: cilium.transport_sockets.mux
+      filters:
+      - name: cilium.network
+        config:
+          proxylib: "proxylib/libcilium.so"
+          l7_proto: "test.passer"
+      - name: envoy.http_connection_manager
+        config:
+          stat_prefix: config_test
+          codec_type: auto
+          http_filters:
+          - name: test_l7policy
+            config:
+              access_log_path: "{{ test_udsdir }}/access_log.sock"
+          - name: envoy.router
+          route_config:
+            name: policy_enabled
+            virtual_hosts:
+              name: integration
+              domains: "*"
+              routes:
+              - route:
+                  cluster: cluster2
                   max_grpc_timeout:
                     seconds: 0
                     nanos: 0

@@ -45,6 +45,10 @@ struct ShimTuple {
     dport_ = htons(dst->port());
   }
 
+  ShimTuple(const void *mem) {
+    memcpy(this, mem, sizeof(*this));
+  }
+
   ShimTuple(uint8_t family, absl::uint128 src, absl::uint128 dst, uint32_t sport, uint32_t dport) {
     memset(this, 0, sizeof(*this));
     sip6_ = src;
@@ -140,9 +144,16 @@ struct ShimTuple {
 };
 
 struct ShimHeader {
-#if 0
-  uint32_t length_; // frame length, NOT including this shim header
+#if 1
   ShimTuple id_;
+  uint32_t length_; // frame length, NOT including this shim header
+
+  ShimHeader(const ShimTuple& id, uint32_t length) : id_(id), length_(length) {}
+  ShimHeader(Buffer::Instance& buffer) : id_(buffer.linearize(sizeof *this)) {
+    buffer.copyOut(sizeof id_, sizeof length_, &length_);
+    buffer.drain(sizeof(*this));
+  }
+  
 #endif
 };
 

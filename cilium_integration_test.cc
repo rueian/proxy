@@ -401,8 +401,6 @@ static_resources:
     - socket_address:
         address: 127.0.0.1
         port_value: 0
-    transport_socket:
-      name: cilium.transport_sockets.mux
   - name: xds-grpc-cilium
     connect_timeout:
       seconds: 5
@@ -422,11 +420,9 @@ static_resources:
       name: test_bpf_metadata
       config:
         is_ingress: {0}
-        use_kTLS: true
+        use_kTLS: false
     filter_chains:
-    - transport_socket:
-        name: cilium.transport_sockets.mux
-      filter_chain_match:
+    - filter_chain_match:
         prefix_ranges:
         - address_prefix: {{ ntop_ip_loopback_address }}
           prefix_len: 32
@@ -439,9 +435,7 @@ static_resources:
         config:
           stat_prefix: tcp_stats
           cluster: cluster1
-    - transport_socket:
-        name: cilium.transport_sockets.mux
-      filter_chain_match:
+    - filter_chain_match:
         prefix_ranges:
         - address_prefix: {{ ntop_ip_loopback_address }}
           prefix_len: 32
@@ -472,6 +466,66 @@ static_resources:
                     nanos: 0
                 match:
                   prefix: "/"
+)EOF";
+
+const std::string cilium_tcp_proxy_config_fmt = R"EOF(
+admin:
+  access_log_path: /dev/null
+  address:
+    socket_address:
+      address: 127.0.0.1
+      port_value: 0
+static_resources:
+  clusters:
+  - name: cluster1
+    type: ORIGINAL_DST
+    lb_policy: ORIGINAL_DST_LB
+    connect_timeout:
+      seconds: 1
+    hosts:
+    - socket_address:
+        address: 127.0.0.1
+        port_value: 0
+  - name: cluster2
+    type: ORIGINAL_DST
+    lb_policy: ORIGINAL_DST_LB
+    connect_timeout:
+      seconds: 1
+    transport_socket:
+      name: cilium.transport_sockets.mux
+  - name: xds-grpc-cilium
+    connect_timeout:
+      seconds: 5
+    type: STATIC
+    lb_policy: ROUND_ROBIN
+    http2_protocol_options:
+    hosts:
+    - pipe:
+        path: /var/run/cilium/xds.sock
+  listeners:
+  - name: tcp
+    address:
+      socket_address:
+        address: 127.0.0.1
+        port_value: 0
+    listener_filters:
+      name: test_bpf_metadata
+      config:
+        is_ingress: {0}
+        use_kTLS: false
+    filter_chains:
+    - filter_chain_match:
+        prefix_ranges:
+        - address_prefix: {{ ntop_ip_loopback_address }}
+          prefix_len: 32
+      filters:
+      - name: cilium.network
+        config:
+          proxylib: "proxylib/libcilium.so"
+      - name: envoy.tcp_proxy
+        config:
+          stat_prefix: tcp_stats
+          cluster: cluster1
 )EOF";
 
 class CiliumHttpIntegrationTest
@@ -935,7 +989,7 @@ public:
 
 class CiliumTcpProxyIntegrationTest : public CiliumTcpIntegrationTest {
 public:
-  CiliumTcpProxyIntegrationTest() : CiliumTcpIntegrationTest(fmt::format(TestEnvironment::substitute(cilium_proxy_config_fmt, GetParam()), "true")) {}
+  CiliumTcpProxyIntegrationTest() : CiliumTcpIntegrationTest(fmt::format(TestEnvironment::substitute(cilium_tcp_proxy_config_fmt, GetParam()), "true")) {}
 };
 
 INSTANTIATE_TEST_CASE_P(IpVersions, CiliumTcpProxyIntegrationTest,
@@ -1157,8 +1211,6 @@ static_resources:
     - socket_address:
         address: 127.0.0.1
         port_value: 0
-    transport_socket:
-      name: cilium.transport_sockets.mux
   - name: xds-grpc-cilium
     connect_timeout:
       seconds: 5
@@ -1178,11 +1230,9 @@ static_resources:
       name: test_bpf_metadata
       config:
         is_ingress: {0}
-        use_kTLS: true
+        use_kTLS: false
     filter_chains:
-    - transport_socket:
-        name: cilium.transport_sockets.mux
-      filter_chain_match:
+    - filter_chain_match:
         prefix_ranges:
         - address_prefix: {{ ntop_ip_loopback_address }}
           prefix_len: 32
@@ -1360,8 +1410,6 @@ static_resources:
     - socket_address:
         address: 127.0.0.1
         port_value: 0
-    transport_socket:
-      name: cilium.transport_sockets.mux
   - name: xds-grpc-cilium
     connect_timeout:
       seconds: 5
@@ -1381,11 +1429,9 @@ static_resources:
       name: test_bpf_metadata
       config:
         is_ingress: {0}
-        use_kTLS: true
+        use_kTLS: false
     filter_chains:
-    - transport_socket:
-        name: cilium.transport_sockets.mux
-      filter_chain_match:
+    - filter_chain_match:
         prefix_ranges:
         - address_prefix: {{ ntop_ip_loopback_address }}
           prefix_len: 32

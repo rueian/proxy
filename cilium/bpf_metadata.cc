@@ -223,7 +223,7 @@ Network::FilterStatus Instance::onAccept(Network::ListenerFilterCallbacks &cb) {
     stopped_ = true;
     return Network::FilterStatus::StopIteration;
   }
-#if 1
+#if 0
   // Create a copy of the socket and pass it to newConnection callback.
   int fd2 = dup(socket.fd());
   ASSERT(fd2 >= 0, "dup() failed");

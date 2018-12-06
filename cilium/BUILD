@@ -97,16 +97,43 @@ envoy_cc_library(
 )
 
 envoy_cc_library(
-    name = "proxymap_lib",
+    name = "bpf_lib",
     srcs = [
         "bpf.cc",
-        "proxymap.cc",
     ],
     hdrs = [
         "bpf.h",
         "//:linux/bpf.h",
         "//:linux/bpf_common.h",
         "//:linux/type_mapper.h",
+    ],
+    repository = "@envoy",
+    deps = [
+    ],
+)
+
+envoy_cc_library(
+    name = "ktlsmaps_lib",
+    srcs = [
+        "ktlsmaps.cc",
+    ],
+    hdrs = [
+        "ktlsmaps.h",
+    ],
+    repository = "@envoy",
+    deps = [
+        "@envoy//include/envoy/singleton:manager_interface",
+        "@envoy//source/common/common:logger_lib",
+        "//cilium:bpf_lib",
+    ],
+)
+
+envoy_cc_library(
+    name = "proxymap_lib",
+    srcs = [
+        "proxymap.cc",
+    ],
+    hdrs = [
         "proxymap.h",
     ],
     repository = "@envoy",
@@ -114,9 +141,9 @@ envoy_cc_library(
         "@envoy//include/envoy/network:listen_socket_interface",
         "@envoy//include/envoy/network:connection_interface",
         "@envoy//include/envoy/singleton:manager_interface",
-        "@envoy//source/common/common:assert_lib",
         "@envoy//source/common/common:logger_lib",
         "@envoy//source/common/network:address_lib",
+        "//cilium:bpf_lib",
     ],
 )
 
@@ -192,6 +219,7 @@ envoy_cc_library(
         "@envoy//source/common/local_info:local_info_lib",
         "//cilium/api:bpf_metadata_cc",
         "//cilium/api:nphds_cc",
+        "//cilium:ktlsmaps_lib",
         "//cilium:mux_socket_lib",
         "//cilium:proxymap_lib",
         "//cilium:socket_option_lib",

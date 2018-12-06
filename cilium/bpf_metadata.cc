@@ -83,6 +83,7 @@ namespace Filter {
 namespace BpfMetadata {
 
 // Singleton registration via macro defined in envoy/singleton/manager.h
+SINGLETON_MANAGER_REGISTRATION(cilium_bpf_ktlsmaps);
 SINGLETON_MANAGER_REGISTRATION(cilium_bpf_proxymap);
 SINGLETON_MANAGER_REGISTRATION(cilium_host_map);
 SINGLETON_MANAGER_REGISTRATION(cilium_network_policy);
@@ -127,6 +128,13 @@ Config::Config(const ::cilium::BpfMetadata &config, Server::Configuration::Liste
 	  return std::make_shared<Cilium::ProxyMap>(bpf_root);
 	});
     if (bpf_root != maps_->bpfRoot()) {
+      throw EnvoyException(fmt::format("cilium.bpf_metadata: Invalid bpf_root: {}", bpf_root));
+    }
+    ktlsmaps_ = context.singletonManager().getTyped<Cilium::KTLSMaps>(
+        SINGLETON_MANAGER_REGISTERED_NAME(cilium_bpf_ktlsmaps), [&bpf_root] {
+	  return std::make_shared<Cilium::KTLSMaps>(bpf_root);
+	});
+    if (bpf_root != ktlsmaps_->bpfRoot()) {
       throw EnvoyException(fmt::format("cilium.bpf_metadata: Invalid bpf_root: {}", bpf_root));
     }
   }
@@ -221,7 +229,11 @@ Network::FilterStatus Instance::onAccept(Network::ListenerFilterCallbacks &cb) {
     // Create the upstream mux on the same worker thread that accepts the downstream mux
     // Only one worker thread creates the upstream_socket_, so we only get one
     // worker thread ever accepting a kTLS mux connection!
-    ENVOY_LOG_MISC(trace, "UPSTREAM MUX creating MUX!");
+    ENVOY_LOG_MISC(trace, "UPSTREAM MUX creating MUX! Registering upstream fd {} and downstream fd {}",
+		   config_->upstream_socket_->fd(), socket.fd());
+
+    config_->ktlsmaps_->registerMuxSockets(config_->upstream_socket_->fd(), socket.fd());
+    
     upstream_mux_ = std::make_unique<Cilium::Mux>(cb_->dispatcher(),
 						  *config_->upstream_socket_,
 						  // add new connetion callback

@@ -11,6 +11,7 @@
 
 #include "cilium/api/bpf_metadata.pb.h"
 #include "cilium/proxymap.h"
+#include "cilium/ktlsmaps.h"
 #include "cilium/host_map.h"
 #include "cilium/mux_socket.h"
 #include "cilium/network_policy.h"
@@ -36,6 +37,8 @@ public:
   std::shared_ptr<const Cilium::NetworkPolicyMap> npmap_;
   Cilium::ProxyMapSharedPtr maps_{};
   std::shared_ptr<const Cilium::PolicyHostMap> hosts_;
+
+  Cilium::KTLSMapsSharedPtr ktlsmaps_{};
 
   Thread::MutexBasicLockable lock_;
   std::unique_ptr<Network::ClientSocketImpl> upstream_socket_ GUARDED_BY(lock_);

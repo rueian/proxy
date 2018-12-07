@@ -1,5 +1,7 @@
 #pragma once
 
+#include <iomanip>
+
 #include "envoy/buffer/buffer.h"
 #include "envoy/network/transport_socket.h"
 #include "envoy/server/transport_socket_config.h"
@@ -27,29 +29,49 @@ private:
   bool upstream_;
 };
 
-struct ShimTuple {
-  ShimTuple(const Network::Address::Ip* src, const Network::Address::Ip* dst) {
+template<typename T>
+std::string str(T begin, T end)
+{
+  std::stringstream ss;
+  bool first = true;
+  for (; begin != end; begin++) {
+    if (!first)
+      ss << ", ";
+    ss << "0x" << std::uppercase << std::setfill('0') << std::setw(8) << std::hex << ntohl(*begin);
+    first = false;
+  }
+  return ss.str();
+}
+
+#define ENDPOINT_KEY_IPV4 1
+#define ENDPOINT_KEY_IPV6 2
+
+struct ShimHeader {
+  ShimHeader(Buffer::Instance& buffer) {
+    memcpy(this, buffer.linearize(sizeof *this), sizeof *this);
+    buffer.drain(sizeof *this);
+    ENVOY_LOG_MISC(debug, "MUXT Received header: {}: {}, length: {}, size: {}", str(reinterpret_cast<const uint32_t*>(this),
+	reinterpret_cast<const uint32_t*>(reinterpret_cast<const uint8_t*>(this) + sizeof *this)), String(), length_, sizeof *this);
+  }
+  
+  ShimHeader(const Network::Address::Ip* src, const Network::Address::Ip* dst) {
     memset(this, 0, sizeof(*this));
     if (src && dst && src->ipv4() && dst->ipv4()) {
-      family_ = AF_INET;
+      family_ = ENDPOINT_KEY_IPV4;
       sip4_ = src->ipv4()->address();
       dip4_ = dst->ipv4()->address();
     } else if (src && dst && src->ipv6() && dst->ipv6()) {
-      family_ = AF_INET6;
+      family_ = ENDPOINT_KEY_IPV6;
       sip6_ = src->ipv6()->address();
       dip6_ = dst->ipv6()->address();
     } else {
       throw EnvoyException("mux_socket: Invalid address families");
     }
-    sport_ = htons(src->port());
-    dport_ = htons(dst->port());
+    sport_ = src->port();
+    dport_ = dst->port();
   }
 
-  ShimTuple(const void *mem) {
-    memcpy(this, mem, sizeof(*this));
-  }
-
-  ShimTuple(uint8_t family, absl::uint128 src, absl::uint128 dst, uint32_t sport, uint32_t dport) {
+  ShimHeader(uint8_t family, absl::uint128 src, absl::uint128 dst, uint32_t sport, uint32_t dport) {
     memset(this, 0, sizeof(*this));
     sip6_ = src;
     dip6_ = dst;
@@ -59,28 +81,30 @@ struct ShimTuple {
   }
 
   // Flip the source and destination addresses and ports
-  ShimTuple operator~() const {
-    return ShimTuple(family_, dip6_, sip6_, dport_, sport_);
+  ShimHeader operator~() const {
+    return ShimHeader(family_, dip6_, sip6_, dport_, sport_);
   }
-  
-  bool operator==(const ShimTuple& other) const {
-    return memcmp(this, &other, sizeof *this) == 0;
+
+  // ignores the length!
+  bool operator==(const ShimHeader& other) const {
+    return memcmp(this, &other, sizeof *this - sizeof this->length_) == 0;
   }
 
   bool srcMatch(const Network::Address::Ip* ip) const {
-    return sport_ == htons(ip->port()) &&
-      ((family_ == AF_INET && ip->ipv4() && sip4_ == ip->ipv4()->address()) ||
-       (family_ == AF_INET6 && ip->ipv6() && sip6_ == ip->ipv6()->address()));
+    return sport_ == ip->port() &&
+      ((family_ == ENDPOINT_KEY_IPV4 && ip->ipv4() && sip4_ == ip->ipv4()->address()) ||
+       (family_ == ENDPOINT_KEY_IPV6 && ip->ipv6() && sip6_ == ip->ipv6()->address()));
   }
 
   bool dstMatch(const Network::Address::Ip* ip) const {
-    return dport_ == htons(ip->port()) &&
-      ((family_ == AF_INET && ip->ipv4() && dip4_ == ip->ipv4()->address()) ||
-       (family_ == AF_INET6 && ip->ipv6() && dip6_ == ip->ipv6()->address()));
+    return dport_ == ip->port() &&
+      ((family_ == ENDPOINT_KEY_IPV4 && ip->ipv4() && dip4_ == ip->ipv4()->address()) ||
+       (family_ == ENDPOINT_KEY_IPV6 && ip->ipv6() && dip6_ == ip->ipv6()->address()));
   }
 
   operator std::vector<uint32_t>() const {
-    std::vector<uint32_t> key(reinterpret_cast<const uint32_t*>(this), &dport_ + 1);
+    std::vector<uint32_t> key(reinterpret_cast<const uint32_t*>(this), &length_ + 1);
+    key.back() = 0; // clear the length for hashing purposes
     return key;
   }
 
@@ -93,14 +117,16 @@ struct ShimTuple {
     size_t ss_size;
 
     ss.ss_family = family_;
-    if (family_ == AF_INET6) {
+    if (family_ == ENDPOINT_KEY_IPV6) {
+      sin6.sin6_family = AF_INET6;
       memcpy(static_cast<void*>(&sin6.sin6_addr.s6_addr), static_cast<const void*>(&dip6_), sizeof(sip6_));
-      sin6.sin6_port = sport_;
+      sin6.sin6_port = htons(sport_);
       ss_size = sizeof(sin6);
     } else {
-      ASSERT(family_ == AF_INET);
+      ASSERT(family_ == ENDPOINT_KEY_IPV4);
+      sin.sin_family = AF_INET;
       sin.sin_addr.s_addr = sip4_;
-      sin.sin_port = sport_;
+      sin.sin_port = htons(sport_);
       ss_size = sizeof(sin);
     }
     return Network::Address::addressFromSockAddr(ss, ss_size, false);
@@ -114,18 +140,23 @@ struct ShimTuple {
     };
     size_t ss_size;
 
-    ss.ss_family = family_;
-    if (family_ == AF_INET6) {
+    if (family_ == ENDPOINT_KEY_IPV6) {
+      sin6.sin6_family = AF_INET6;
       memcpy(static_cast<void*>(&sin6.sin6_addr.s6_addr), static_cast<const void*>(&dip6_), sizeof(dip6_));
-      sin6.sin6_port = dport_;
+      sin6.sin6_port = htons(dport_);
       ss_size = sizeof(sin6);
     } else {
-      ASSERT(family_ == AF_INET);
+      ASSERT(family_ == ENDPOINT_KEY_IPV4);
+      sin.sin_family = AF_INET;
       sin.sin_addr.s_addr = dip4_;
-      sin.sin_port = dport_;
+      sin.sin_port = htons(dport_);
       ss_size = sizeof(sin);
     }
     return Network::Address::addressFromSockAddr(ss, ss_size, false);
+  }
+
+  std::string String() {
+    return fmt::format("family: {}, sport: {}, dport: {}, sip: {:x}, dip: {:x}, length: {}", family_, sport_, dport_, ntohl(sip4_), ntohl(dip4_), length_);
   }
   
   union {
@@ -139,22 +170,9 @@ struct ShimTuple {
   uint8_t  family_;
   uint8_t  pad1_;
   uint16_t pad2_;
-  uint32_t sport_;
-  uint32_t dport_; // must be last
-};
-
-struct ShimHeader {
-#if 1
-  ShimTuple id_;
-  uint32_t length_; // frame length, NOT including this shim header
-
-  ShimHeader(const ShimTuple& id, uint32_t length) : id_(id), length_(length) {}
-  ShimHeader(Buffer::Instance& buffer) : id_(buffer.linearize(sizeof *this)) {
-    buffer.copyOut(sizeof id_, sizeof length_, &length_);
-    buffer.drain(sizeof(*this));
-  }
-  
-#endif
+  uint32_t sport_;  // host byte order
+  uint32_t dport_;  // host byte order
+  uint32_t length_; // host byte order total frame length, including this shim header, must be last
 };
 
 class Mux;
@@ -184,12 +202,15 @@ private:
   int fd_{-1};
 };
 
+
+typedef std::function<void(Network::ConnectionSocket&)> GetMetadataCB;
 typedef std::function<void(Network::ConnectionSocketPtr&&)> NewConnectionCB;
 typedef std::function<void()> CloseMuxCB;
 
 class Mux {
 public:
-  Mux(Event::Dispatcher& dispatcher, Network::ConnectionSocket& socket, NewConnectionCB addNewConnetion, CloseMuxCB closeMux, bool upstream);
+  Mux(Event::Dispatcher& dispatcher, Network::ConnectionSocket& socket,
+      GetMetadataCB getMetadata, NewConnectionCB addNewConnetion, CloseMuxCB closeMux, bool upstream);
   virtual ~Mux();
 
 protected:
@@ -199,10 +220,11 @@ protected:
   // Read data from the muxed socket and demux it to "sockets_"
   // May be called from multiple threads
   void readAndDemux(bool upstream);
-  Api::SysCallIntResult prependAndWrite(const ShimTuple& id, Buffer::Instance& buffer);
+  Api::SysCallIntResult prependAndWrite(const ShimHeader& id, Buffer::Instance& buffer, int fd);
 
 private:
-  MuxData* addBuffer(const ShimTuple& id, bool upstream);
+  MuxData* addBuffer(const ShimHeader& id, bool upstream);
+  void removeBuffer_(MuxData* mux_data);
 
   void onRead();
   void onWrite();
@@ -210,6 +232,7 @@ private:
   void onClose();
 
   Network::ConnectionSocket& socket_;
+  GetMetadataCB getMetadata_;
   NewConnectionCB addNewConnection_;
   CloseMuxCB closeMux_;
   bool upstream_;
@@ -224,7 +247,8 @@ private:
   Event::FileEventPtr file_event_;
   Event::TimerPtr timer_;
 
-  Mux* other{};  // ponter to the corresponding up/downstream mux.
+public:
+  Mux* other_{};  // ponter to the corresponding up/downstream mux.
 };
 
 typedef std::unique_ptr<Mux> MuxPtr;

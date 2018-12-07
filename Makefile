@@ -38,7 +38,7 @@ ISTIO_VERSION = 1.1.0-snapshot.2
 
 DOCKER=$(QUIET)docker
 
-BAZEL_BUILD_OPTS ?= --jobs=3
+BAZEL_BUILD_OPTS ?= --jobs=2
 
 # Dockerfile builds require special options
 ifdef PKG_BUILD

@@ -53,6 +53,9 @@ envoy_cc_library(
     hdrs = [
         "socket_option.h",
     ],
+    srcs = [
+	"socket_option.cc",
+    ],	    	
     repository = "@envoy",
     deps = [
         "@envoy//include/envoy/network:listen_socket_interface",

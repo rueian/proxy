@@ -30,15 +30,13 @@ KTLSMaps::KTLSMaps(const std::string &bpf_root)
 bool KTLSMaps::registerMuxSockets(int upstream_fd, int downstream_fd) {
   int i = 0;
   bool ok = true;
-  // map names are reversed. "ktls_up" must get the accepted downstream/server fd,
-  // and "ktls_down" the connecting upstream/client fd. At least for Egress.
-  // May be reversed for ingress?
-  if (!downmap_.insert(&i, &upstream_fd)) {
+  // At least for Egress. May be reversed for ingress?
+  if (!downmap_.insert(&i, &downstream_fd)) {
     ENVOY_LOG(info, "cilium.bpf_metadata: Upstream kTLS map update failed: {}",
 	      strerror(errno));
     ok = false;
   }
-  if (!upmap_.insert(&i, &downstream_fd)) {
+  if (!upmap_.insert(&i, &upstream_fd)) {
     ENVOY_LOG(info, "cilium.bpf_metadata: Downstream kTLS map update failed: {}",
 	      strerror(errno));
     ok = false;

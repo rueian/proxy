@@ -40,13 +40,13 @@ public:
 	  if (config->use_kTLS_) {
 	    Thread::LockGuard guard(config->lock_);
 	    if (!config->upstream_socket_) {
-	      ENVOY_LOG_MISC(trace, "UPSTREAM MUX creating socket for {}, fd {}!", listenerConfig->name(), socket.fd());
+	      ENVOY_LOG_MISC(trace, "UPSTREAM MUXT creating socket for {}, fd {}!", listenerConfig->name(), socket.fd());
 	      // Get the listening address and create a socket connecting to it.
 	      config->upstream_socket_ = std::make_unique<Network::ClientSocketImpl>(listenerConfig->socket().localAddress());
-	      ENVOY_LOG_MISC(trace, "UPSTREAM MUX socket {} CONNECTING!", config->upstream_socket_->fd());
+	      ENVOY_LOG_MISC(trace, "UPSTREAM MUXT socket {} CONNECTING!", config->upstream_socket_->fd());
 	      const Api::SysCallIntResult result = config->upstream_socket_->remoteAddress()->connect(config->upstream_socket_->fd());
 	      if (result.rc_ == -1 && result.errno_ != EINPROGRESS) {
-		ENVOY_LOG_MISC(debug, "UPSTREAM MUX connect failure: {}", strerror(result.errno_));
+		ENVOY_LOG_MISC(debug, "UPSTREAM MUXT connect failure: {}", strerror(result.errno_));
 		config->upstream_socket_.reset(nullptr);
 		return false;
 	      }
@@ -152,14 +152,23 @@ bool Config::getMetadata(Network::ConnectionSocket& socket) {
 
   if (maps_) {
     ok = maps_->getBpfMetadata(socket, &source_identity, &orig_dport, &proxy_port);
-  } else if (hosts_ && socket.remoteAddress()->ip() && socket.localAddress()->ip()) {
+    ENVOY_LOG_MISC(debug, "MUXT source_identity after proxymap lookup: {} (ok: {})", source_identity, ok);
+  }
+
+  if (!ok && hosts_ && socket.remoteAddress()->ip() && socket.localAddress()->ip()) {
     // Resolve the source security ID
     source_identity = hosts_->resolve(socket.remoteAddress()->ip());
     // assume original address has been restored
     orig_dport = socket.localAddress()->ip()->port();
     proxy_port = 0; // no proxy_port when no bpf.
     ok = true;
+    ENVOY_LOG_MISC(debug, "MUXT source_identity after hostmap lookup: {} (ok: {})", source_identity, ok);
+  } else {
+    ENVOY_LOG_MISC(debug, "MUXT no hosts {} map or non-ip source {} dest {}",
+		   hosts_ != nullptr, socket.remoteAddress()->ip() != nullptr,
+		   socket.localAddress()->ip() != nullptr);
   }
+  
   std::string pod_ip;
   if (is_ingress_ && socket.localAddress()->ip()) {
     pod_ip = socket.localAddress()->ip()->addressAsString();
@@ -167,13 +176,21 @@ bool Config::getMetadata(Network::ConnectionSocket& socket) {
   } else if (!is_ingress_ && socket.remoteAddress()->ip()) {
     pod_ip = socket.remoteAddress()->ip()->addressAsString();
     ENVOY_LOG_MISC(debug, "EGRESS POD_IP: {}", pod_ip);
+  } else {
+    ENVOY_LOG_MISC(debug, "MUXT non-IP address source {} dest {}",
+		   socket.remoteAddress()->ip() ? "IP" : "non-IP",
+		   socket.localAddress()->ip() ? "IP" : "non-IP");
   }
   if (ok) {
     // Resolve the destination security ID
     if (hosts_ && socket.localAddress()->ip()) {
       destination_identity = hosts_->resolve(socket.localAddress()->ip());
     }
-    socket.addOption(std::make_shared<Cilium::SocketOption>(npmap_, maps_, source_identity, destination_identity, is_ingress_, orig_dport, proxy_port, std::move(pod_ip)));
+    if (use_kTLS_) {
+      socket.addOption(std::make_shared<Cilium::MuxSocketOption>(npmap_, maps_, source_identity, destination_identity, is_ingress_, orig_dport, proxy_port, std::move(pod_ip), socket.remoteAddress()));
+    } else {
+      socket.addOption(std::make_shared<Cilium::SocketOption>(npmap_, maps_, source_identity, destination_identity, is_ingress_, orig_dport, proxy_port, std::move(pod_ip)));
+    }
   }
 
   return ok;
@@ -185,7 +202,7 @@ Instance::Instance(const ConfigSharedPtr& config)
 }
 
 Network::FilterStatus Instance::onAccept(Network::ListenerFilterCallbacks &cb) {
-  Network::ConnectionSocket &socket = cb.socket();
+  Network::ConnectionSocket& socket = cb.socket();
   if (!config_->getMetadata(socket)) {
     ENVOY_LOG(debug,
               "cilium.bpf_metadata ({}): NO metadata for the connection",
@@ -226,32 +243,50 @@ Network::FilterStatus Instance::onAccept(Network::ListenerFilterCallbacks &cb) {
   cb_ = &cb;
 
   if (config_->use_kTLS_) {
+    Thread::LockGuard guard(config_->lock_);
     // Create the upstream mux on the same worker thread that accepts the downstream mux
     // Only one worker thread creates the upstream_socket_, so we only get one
     // worker thread ever accepting a kTLS mux connection!
-    ENVOY_LOG_MISC(trace, "UPSTREAM MUX creating MUX! Registering upstream fd {} and downstream fd {}",
+    ENVOY_LOG_MISC(trace, "UPSTREAM MUXT creating MUX! Registering upstream fd {} and downstream fd {}",
 		   config_->upstream_socket_->fd(), socket.fd());
 
     config_->ktlsmaps_->registerMuxSockets(config_->upstream_socket_->fd(), socket.fd());
     
     upstream_mux_ = std::make_unique<Cilium::Mux>(cb_->dispatcher(),
 						  *config_->upstream_socket_,
+						  // get Metadata callback
+						  [](Network::ConnectionSocket& sock) {
+						    ENVOY_LOG_MISC(trace, "UPSTREAM MUXT get metadata callback on fd {}!", sock.fd());
+						  },						  
 						  // add new connetion callback
 						  [](Network::ConnectionSocketPtr&& sock) {
-						    ENVOY_LOG_MISC(trace, "UPSTREAM MUX new connection callback on fd {}!", sock->fd());
+						    ENVOY_LOG_MISC(trace, "UPSTREAM MUXT new connection callback on fd {}!", sock->fd());
 						  },
 						  // close accepted connection callback
 						  []() {
-						    ENVOY_LOG_MISC(trace, "UPSTREAM MUX close MUX connection callback!");
+						    ENVOY_LOG_MISC(trace, "UPSTREAM MUXT close MUX connection callback!");
 						  },
 						  true /* upstream mux */);
 
     // Pass the connection to a new mux instance
-    ENVOY_LOG(debug, "MUX test: New connection accepted on fd {}", socket.fd());
+    ENVOY_LOG(debug, "MUXT test: New connection accepted on fd {}", socket.fd());
 
     mux_ = std::make_unique<Cilium::Mux>(cb_->dispatcher(), socket,
+					 // get Metadata callback
+					 [this](Network::ConnectionSocket& sock) {
+					   if (!config_->getMetadata(sock)) {
+					     ENVOY_LOG(debug,
+						       "cilium.bpf_metadata ({}): NO metadata for the MUXT connection",
+						       config_->is_ingress_ ? "ingress" : "egress");
+					   } else {
+					     ENVOY_LOG(trace,
+						       "cilium.bpf_metadata ({}): GOT metadata for new MUXT connection",
+						       config_->is_ingress_ ? "ingress" : "egress");
+					   }
+					 },						  
 					 // add new connetion callback
 					 [this](Network::ConnectionSocketPtr&& sock) {
+					   ENVOY_LOG_MISC(trace, "DOWNSTREAM MUXT new connection callback on fd {}!", sock->fd());
 					   // Set detected application protocol to "tcp" if policy needs proxylib
 					   const auto option = Cilium::GetSocketOption(sock->options());
 					   if (option) {
@@ -265,15 +300,29 @@ Network::FilterStatus Instance::onAccept(Network::ListenerFilterCallbacks &cb) {
 					 },
 					 // close accepted connection callback
 					 [this]() {
+					   ENVOY_LOG_MISC(trace, "DOWNSTREAM MUXT close MUX connection callback!");
 					   stopped_ = false;
 					   cb_->continueFilterChain(false);
 					 },
 					 false /* downstream mux */);
+    // Link the muxes together
+    mux_->other_ = upstream_mux_.get();
+    upstream_mux_->other_ = mux_.get();
 
+#if 0
+    // Place test data to the mux read buffer
+    uint32_t data[] = {
+      0x0A0B0001, 0x00000000, 0x00000000, 0x00000000,
+      0x0A0B33D2, 0x00000000, 0x00000000, 0x00000000,
+      0x01000000, 0xDA560000, 0x1F8D0000, 0x81000000,
+      0x20202020, 0x44444444, 0x20202020, 0x44444444,
+      0x20202020, 0x44444444, 0x20202020, 0x44444444,
+      0x20202020, 0x44444444, 0x20202020, 0x44444444,
+      0x20202020, 0x44444444, 0x20202020, 0x44444444,
+    };
+    mux_->read_buffer_.add(data, sizeof data);
+#endif
     stopped_ = true;
-
-    // TODO: Register the socket pair with sockmap!
-    
     return Network::FilterStatus::StopIteration;
   }
 #if 0

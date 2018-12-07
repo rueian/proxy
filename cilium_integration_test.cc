@@ -619,6 +619,7 @@ public:
   void Denied(Http::TestHeaderMapImpl&& headers) {
     policy_config = TestEnvironment::substitute(BASIC_POLICY, GetParam());
     initialize();
+    ::usleep(50000);
     codec_client_ = makeHttpConnection(lookupPort("http"));
     auto response = codec_client_->makeHeaderOnlyRequest(headers);
     response->waitForEndStream();
@@ -629,6 +630,7 @@ public:
   void Accepted(Http::TestHeaderMapImpl&& headers) {
     policy_config = TestEnvironment::substitute(BASIC_POLICY, GetParam());
     initialize();
+    ::usleep(50000);
     codec_client_ = makeHttpConnection(lookupPort("http"));
     auto response = sendRequestAndWaitForResponse(headers, 0, default_response_headers_, 0);
 

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <atomic>
+
 #include "envoy/api/v2/core/base.pb.h"
 #include "envoy/network/listen_socket.h"
 #include "common/common/logger.h"
@@ -89,6 +91,49 @@ SocketOption(std::shared_ptr<const Cilium::NetworkPolicyMap> npmap, const ProxyM
   uint16_t port_;
   uint16_t proxy_port_;
   std::string pod_ip_;
+};
+
+class MuxSocketOption : public SocketOption {
+public:
+  MuxSocketOption(std::shared_ptr<const Cilium::NetworkPolicyMap> npmap, const ProxyMapSharedPtr& maps, uint32_t source_identity, uint32_t destination_identity, bool ingress, uint16_t port, uint16_t proxy_port, std::string&& pod_ip, Network::Address::InstanceConstSharedPtr remote_address)
+    : SocketOption(npmap, maps, source_identity, destination_identity, ingress, port, proxy_port, std::move(pod_ip)), remote_address_(remote_address), salt_(++root) {
+    ENVOY_LOG(debug, "MUXT Cilium MuxSocketOption(): source_address: {}, salt {}", remote_address_->asString(), salt_);
+  }
+
+  bool setOption(Network::Socket& socket, envoy::api::v2::core::SocketOption::SocketState state) const override {
+    // Only set the option once per socket
+    if (state != envoy::api::v2::core::SocketOption::STATE_PREBIND) {
+      ENVOY_LOG(trace, "Skipping setting socket ({}) source address, state != STATE_PREBIND", socket.fd());
+      return true;
+    }
+    // Normally this is done after connect(), but muxed connections don't do that
+    auto sock = dynamic_cast<Network::ConnectionSocket*>(&socket);
+    if (sock) {
+      sock->setLocalAddress(remote_address_, false);
+      ENVOY_LOG(trace, "MUXT Set socket ({}) source address to {}", socket.fd(), socket.localAddress()->asString());
+      return true;
+    } 
+    ENVOY_LOG(trace, "MUXT FAILED Setting socket ({}) source address to {}", socket.fd(), socket.localAddress()->asString());
+    return false;
+  }
+
+  void hashKey(std::vector<uint8_t>& key) const override {
+    // Add enough stuff to the hash key to defeat the connection pooling
+    //
+    // Likely could also just add the address and port from the 'remote_address_'
+    // but would have to make sure Envoy Connection objects will not linger
+    // after source ports are reused
+    auto size = key.size();
+    std::copy(reinterpret_cast<const uint8_t*>(&salt_),
+	      reinterpret_cast<const uint8_t*>((&salt_)+1),
+	      std::back_inserter(key));
+    size = key.size() - size;
+    ENVOY_LOG(trace, "MUXT Added ({}) bytes hash key", size);
+  }
+
+  Network::Address::InstanceConstSharedPtr remote_address_;
+  static std::atomic<uint64_t> root;
+  uint64_t salt_;
 };
 
 static inline

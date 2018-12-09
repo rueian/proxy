@@ -127,11 +127,11 @@ $(CHECK_FORMAT): force-non-root
 
 install: force-root
 	$(INSTALL) -m 0755 -d $(DESTDIR)$(BINDIR)
-	$(INSTALL) -m 0755 -T $(CILIUM_ENVOY_BIN) $(DESTDIR)$(BINDIR)/cilium-envoy
 # Strip only non-debug builds
 ifeq "$(findstring -dbg,$(realpath bazel-bin))" ""
-	$(STRIP) $(DESTDIR)$(BINDIR)/cilium-envoy
+	$(STRIP) $(CILIUM_ENVOY_BIN)
 endif
+	$(INSTALL) -m 0755 -T $(CILIUM_ENVOY_BIN) $(DESTDIR)$(BINDIR)/cilium-envoy
 
 bazel-archive: force-non-root tests clean-bins
 	-sudo rm -f $(BAZEL_ARCHIVE)

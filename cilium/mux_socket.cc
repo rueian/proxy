@@ -1,13 +1,15 @@
 #include "mux_socket.h"
 
+#include "envoy/registry/registry.h"
+
+#include "common/api/os_sys_calls_impl.h"
 #include "common/common/assert.h"
 #include "common/common/empty_string.h"
 #include "common/network/listen_socket_impl.h"
-#include "envoy/registry/registry.h"
 
 namespace Envoy {
 namespace Cilium {
-  
+
 std::string MuxSocketName("cilium.transport_sockets.mux");
 
 typedef std::function<void()> ReadCB;
@@ -50,11 +52,10 @@ static std::map<int, MuxData*> muxed_buffers GUARDED_BY(mux_lock);
 void MuxSocket::setTransportSocketCallbacks(Network::TransportSocketCallbacks& callbacks) {
   callbacks_ = &callbacks;
   ASSERT(mux_data_ == nullptr);
+  fd_ = callbacks_->fd();
 
   if (!upstream_) {
     // Find mux_data_ based on the fd
-    fd_ = callbacks_->fd();
-
     Thread::LockGuard guard(mux_lock);
     auto it = muxed_buffers.find(fd_);
     if (it != muxed_buffers.end()) {
@@ -64,8 +65,7 @@ void MuxSocket::setTransportSocketCallbacks(Network::TransportSocketCallbacks& c
       ENVOY_LOG_MISC(trace, "{}MUXT DID NOT find muxed read buffer for fd {}", upstream_ ? 'U' : 'D', fd_); 
     }
   } else {
-    // Upstream: Find a mux based on the connection metadata and dup and reset the
-    // upstream Mux fd.
+    // Upstream: Find a mux based on the connection metadata
     auto ip = callbacks_->connection().remoteAddress()->ip();
     auto ip_src = callbacks_->connection().localAddress()->ip();
     ENVOY_LOG_MISC(trace, "{}MUXT local address {}", upstream_ ? 'U' : 'D',
@@ -84,10 +84,8 @@ void MuxSocket::setTransportSocketCallbacks(Network::TransportSocketCallbacks& c
 	  mux_lock.unlock();
 	  {
 	    Thread::LockGuard guard(upstream_mux->lock_);
-	    mux_data_ = upstream_mux->addBuffer(mux_data->id_, true);
+	    mux_data_ = upstream_mux->addBuffer(fd_, mux_data->id_, true);
 	  }
-	  callbacks_->socket().resetFd(mux_data_->fd_);
-	  fd_ = callbacks_->fd();
 	  break;
 	}
 	ENVOY_LOG_MISC(trace, "{}MUXT UPSTREAM MUX NOT FOUND!", upstream_ ? 'U' : 'D');
@@ -110,12 +108,11 @@ void MuxSocket::setTransportSocketCallbacks(Network::TransportSocketCallbacks& c
 }
 
 void MuxSocket::closeSocket(Network::ConnectionEvent event) {
-  ENVOY_LOG_MISC(trace, "MuxSocket::closeSocket({})", int(event));
-  if (event == Network::ConnectionEvent::RemoteClose) {
-    if (mux_data_ != nullptr) {
-      mux_data_->mux_.removeBuffer(fd_);
-      mux_data_ = nullptr;
-    }
+  ENVOY_LOG_MISC(trace, "{}MUXT MuxSocket::closeSocket({})", upstream_ ? 'U' : 'D', int(event));
+  if (mux_data_ != nullptr) {
+    ASSERT(fd_ != -1);
+    mux_data_->mux_.removeBuffer(fd_);
+    mux_data_ = nullptr;
   }
 }
 
@@ -128,9 +125,6 @@ Network::IoResult MuxSocket::doRead(Buffer::Instance& buffer) {
     ENVOY_LOG_MISC(trace, "No {}MUXT data!", upstream_ ? 'U' : 'D');
     return {Network::PostIoAction::Close, 0, true};
   }
-
-  // Kick the mux transport to read data
-  mux_data_->mux_.readAndDemux(upstream_);
 
   // Move all available data to the caller's buffer
   mux_data_->lock_.lock();
@@ -161,18 +155,18 @@ Network::IoResult MuxSocket::doWrite(Buffer::Instance& buffer, bool end_stream) 
   do {
     if (buffer.length() == 0) {
       if (end_stream && !shutdown_) {
-	ENVOY_CONN_LOG(trace, "{}MuxSocket write shutting down fd: {}", callbacks_->connection(), upstream_ ? 'U' : 'D', fd_);
+	ENVOY_CONN_LOG(trace, "{}MuxSocket write shutting down fd {}", callbacks_->connection(), upstream_ ? 'U' : 'D', fd_);
         // Ignore the result. This can only fail if the connection failed. In that case, the
         // error will be detected on the next read, and dealt with appropriately.
-	mux_data_->mux_.prependAndWrite(mux_data_->id_, buffer, mux_data_->fd_);
+	mux_data_->mux_.prependAndWrite(mux_data_->id_, buffer);
         shutdown_ = true;
       }
       action = Network::PostIoAction::KeepOpen;
-      ENVOY_CONN_LOG(trace, "{}MuxSocket write skipped due to 0-length buffer (fd: {}, end_stream {})", callbacks_->connection(), upstream_ ? 'U' : 'D', fd_, end_stream ? "true" : "false");
+      ENVOY_CONN_LOG(trace, "{}MuxSocket write skipped due to 0-length buffer (fd {}, end_stream {})", callbacks_->connection(), upstream_ ? 'U' : 'D', fd_, end_stream ? "true" : "false");
       break;
     }
-    Api::SysCallIntResult result = mux_data_->mux_.prependAndWrite(mux_data_->id_, buffer, mux_data_->fd_);
-    ENVOY_CONN_LOG(trace, "{}MuxSocket write returns: {} (fd: {}, end_stream {})", callbacks_->connection(), upstream_ ? 'U' : 'D', result.rc_, fd_, end_stream ? "true" : "false");
+    Api::SysCallIntResult result = mux_data_->mux_.prependAndWrite(mux_data_->id_, buffer);
+    ENVOY_CONN_LOG(trace, "{}MuxSocket write returns: {} (fd {}, end_stream {})", callbacks_->connection(), upstream_ ? 'U' : 'D', result.rc_, fd_, end_stream ? "true" : "false");
 
     if (result.rc_ == -1) {
       ENVOY_CONN_LOG(trace, "write error: {} ({})", callbacks_->connection(), result.errno_,
@@ -193,7 +187,10 @@ Network::IoResult MuxSocket::doWrite(Buffer::Instance& buffer, bool end_stream) 
 
 std::string MuxSocket::protocol() const { return MuxSocketName; } // XXX: HACK
 
-void MuxSocket::onConnected() { callbacks_->raiseEvent(Network::ConnectionEvent::Connected); }
+void MuxSocket::onConnected() {
+  ENVOY_LOG_MISC(debug, "raiseEvent(Connected)");
+  callbacks_->raiseEvent(Network::ConnectionEvent::Connected);
+}
 
 Mux::Mux(Event::Dispatcher& dispatcher, Network::ConnectionSocket& socket,
 	 GetMetadataCB getMetadata, NewConnectionCB addNewConnetion, CloseMuxCB closeMux, bool upstream)
@@ -266,12 +263,8 @@ void Mux::onClose() {
 
 // called with 'lock_' held AND 'mux_lock' NOT held!
 // caller has zeroed the length_ field of 'id'!
-MuxData* Mux::addBuffer(const ShimHeader& id, bool upstream) {
-  // Create a copy of the socket and pass it to addNewConnection callback.
-  int fd2 = dup(socket_.fd());
-  ASSERT(fd2 >= 0, "dup() failed");
-  ENVOY_LOG_MISC(trace, "{}MUXT test: dupped fd {}", upstream_ ? 'U' : 'D', fd2);
-
+MuxData* Mux::addBuffer(int fd, const ShimHeader& id, bool upstream) {
+  ENVOY_LOG_MISC(trace, "{}MUXT addBuffer for fd {}", upstream_ ? 'U' : 'D', fd);
   // 'buffers_' owns the MuxData objects!
   // MuxData 'id_' is in the writer order!
 
@@ -283,7 +276,8 @@ MuxData* Mux::addBuffer(const ShimHeader& id, bool upstream) {
     Thread::LockGuard mux_guard(mux_lock);
     removeBuffer_(it->second.get());
   }
-  auto pair = buffers_.emplace(id, std::make_unique<MuxData>(*this, ~id, fd2, upstream));
+
+  auto pair = buffers_.emplace(id, std::make_unique<MuxData>(*this, ~id, fd, upstream));
   ASSERT(pair.second == true); // inserted
   ASSERT(pair.first != buffers_.end()); // inserted
 
@@ -294,25 +288,26 @@ MuxData* Mux::addBuffer(const ShimHeader& id, bool upstream) {
   // Add to the static index by fd as well
   {
     Thread::LockGuard mux_guard(mux_lock);
-    muxed_buffers.emplace(fd2, mux_data);
+    ASSERT(muxed_buffers.find(fd) == muxed_buffers.end());
+    muxed_buffers.emplace(fd, mux_data);
   }
 
-  ENVOY_LOG_MISC(trace, "{}MUXT test: after emplace of dupped fd {}", upstream_ ? 'U' : 'D', fd2);
+  ENVOY_LOG_MISC(trace, "{}MUXT test: after emplace of fd {}", upstream_ ? 'U' : 'D', fd);
 
   if (!upstream) {
     // Call the addNewConnection callback
     Network::ConnectionSocketPtr sock =
-      std::make_unique<Network::ConnectionSocketImpl>(fd2, id.dstAddress(), id.srcAddress());
-    ENVOY_LOG_MISC(trace, "{}MUXT test: ConnectionSocketImpl created on dupped fd {}, local {} remote {}", upstream_ ? 'U' : 'D', fd2, sock->localAddress()->asString(), sock->remoteAddress()->asString());
+      std::make_unique<Network::ConnectionSocketImpl>(fd, id.dstAddress(), id.srcAddress());
+    ENVOY_LOG_MISC(trace, "{}MUXT test: ConnectionSocketImpl created on fd {}, local {} remote {}", upstream_ ? 'U' : 'D', fd, sock->localAddress()->asString(), sock->remoteAddress()->asString());
 
     getMetadata_(*sock);
 
     // Force the local address be marked as restored so that the original dst cluster will forward it
     sock->setLocalAddress(sock->localAddress(), true);
-    ENVOY_LOG_MISC(trace, "{}MUXT test: Local address reset {} for fd {}, remote {} local {}", upstream_ ? 'U' : 'D', fd2, sock->remoteAddress()->asString(), sock->localAddress()->asString());
+    ENVOY_LOG_MISC(trace, "{}MUXT test: Local address reset for fd {}, remote {} local {}", upstream_ ? 'U' : 'D', fd, sock->remoteAddress()->asString(), sock->localAddress()->asString());
     sock->setDetectedTransportProtocol(MuxSocketName);
 
-    ENVOY_LOG_MISC(trace, "{}MUXT test: newConnection on dupped fd {}", upstream_ ? 'U' : 'D', fd2);
+    ENVOY_LOG_MISC(trace, "{}MUXT test: newConnection on fd {}", upstream_ ? 'U' : 'D', fd);
     addNewConnection_(std::move(sock));
   } else {
     // Upstream connection
@@ -322,7 +317,7 @@ MuxData* Mux::addBuffer(const ShimHeader& id, bool upstream) {
 
 // Locks already held
 void Mux::removeBuffer_(MuxData* mux_data) {
-  ENVOY_LOG_MISC(trace, "{}MUXT removeBuffer for fd: {}", upstream_ ? 'U' : 'D', mux_data->fd_);
+  ENVOY_LOG_MISC(trace, "{}MUXT removeBuffer for fd {}", upstream_ ? 'U' : 'D', mux_data->fd_);
   muxed_buffers.erase(mux_data->fd_);
   if (current_reader_ == mux_data) {
     current_reader_ = nullptr;
@@ -330,21 +325,20 @@ void Mux::removeBuffer_(MuxData* mux_data) {
   buffers_.erase(~mux_data->id_); // Frees the MuxData
 }
 
+// Locks already held
+void Mux::removeBuffer_(int fd) {
+  auto it = muxed_buffers.find(fd);
+  if (it != muxed_buffers.end()) {
+    removeBuffer_(it->second);
+  }
+}
+
 // No locks held
 void Mux::removeBuffer(int fd) {
   ENVOY_LOG_MISC(trace, "{}MUXT removeBuffer for fd: {}", upstream_ ? 'U' : 'D', fd);
   Thread::LockGuard guard(lock_);
   Thread::LockGuard mux_guard(mux_lock);
-  auto it = muxed_buffers.find(fd);
-  if (it != muxed_buffers.end()) {
-    ENVOY_LOG_MISC(trace, "{}MUXT found buffer to delete", upstream_ ? 'U' : 'D');
-    const auto* mux_data = it->second;
-    muxed_buffers.erase(it); // invalidates 'it'
-    if (current_reader_ == mux_data) {
-      current_reader_ = nullptr;
-    }
-    buffers_.erase(~mux_data->id_); // Frees the MuxData
-  }
+  removeBuffer_(fd);
 }
 
 void Mux::readAndDemux(bool upstream) {
@@ -382,13 +376,14 @@ void Mux::readAndDemux(bool upstream) {
 	auto len = std::min(remaining_read_length_, read_buffer_.length());
 	if (current_reader_ != nullptr) {
 	  // Move input to the demuxed socket
-	  Thread::LockGuard buffer_guard(current_reader_->lock_);
-	  ENVOY_LOG_MISC(trace, "{}MUXT transfering {} bytes", upstream_ ? 'U' : 'D', len);
-	  current_reader_->read_buffer_.move(read_buffer_, len);
-	  // Wake the dupped fd (not sure if necessary)
-	  if (current_reader_->readCallback_) {
-	    current_reader_->readCallback_();
+	  {
+	    Thread::LockGuard buffer_guard(current_reader_->lock_);
+	    ENVOY_LOG_MISC(trace, "{}MUXT transfering {} bytes", upstream_ ? 'U' : 'D', len);
+	    current_reader_->read_buffer_.move(read_buffer_, len);
 	  }
+	  // Tell the connection there is new data to read
+	  ASSERT(current_reader_->readCallback_);
+	  current_reader_->readCallback_();
 	} else {
 	  // Demuxed socket has been closed before all input was received. Drain the bytes.
 	  ENVOY_LOG_MISC(trace, "{}MUXT draining {} bytes", upstream_ ? 'U' : 'D', len);
@@ -407,19 +402,6 @@ void Mux::readAndDemux(bool upstream) {
 	  std::vector<uint32_t> key = hdr;
 
 	  auto it = buffers_.find(key);
-	  if (upstream_ && it == buffers_.end()) {
-	    // upstream testing has a random source port and host address, match with the remote address only
-	    auto ip_src = socket_.remoteAddress()->ip();
-	    for (it = buffers_.begin(); it != buffers_.end(); it++) {
-	      MuxData* mux_data = it->second.get();
-	      // Upstream 'id_' is in the writer order, it's destination address is the upstream remote address!
-	      // XXX Match also the source (local) address, and make sure it is not nullptr
-	      if (mux_data->id_.dstMatch(ip_src)) {
-		ENVOY_LOG_MISC(trace, "{}MUXT found THE upstream connection on fd {} on mux {}!", upstream_ ? 'U' : 'D', mux_data->fd_, static_cast<void*>(&mux_data->mux_));
-		break;
-	      }
-	    }
-	  }
 	  if (it != buffers_.end()) {
 	    if (remaining_read_length_ > 0 ) {
 	      ENVOY_LOG_MISC(trace, "{}MUXT found buffer for frame length {}", upstream_ ? 'U' : 'D', remaining_read_length_);
@@ -433,7 +415,10 @@ void Mux::readAndDemux(bool upstream) {
 	  } else if (remaining_read_length_ > 0) {
 	    // New connection?
 	    ENVOY_LOG_MISC(trace, "{}MUXT did NOT find a buffer, creating a new one for frame length {}", upstream_ ? 'U' : 'D', remaining_read_length_);
-	    current_reader_ = addBuffer(hdr, upstream_);
+	    Api::OsSysCalls& os_sys_calls = Api::OsSysCallsSingleton::get();
+	    const Api::SysCallIntResult result = os_sys_calls.socket(AF_INET, SOCK_STREAM, 0);
+	    ASSERT(result.rc_ != -1);
+	    current_reader_ = addBuffer(result.rc_, hdr, upstream_);
 	  }
 	}
       }
@@ -441,7 +426,7 @@ void Mux::readAndDemux(bool upstream) {
   } while (true);
 }
 
-Api::SysCallIntResult Mux::prependAndWrite(const ShimHeader& header, Buffer::Instance& buffer, int fd) {
+Api::SysCallIntResult Mux::prependAndWrite(const ShimHeader& header, Buffer::Instance& buffer) {
   Thread::LockGuard guard(lock_);
   if (buffer.length() == 0) {
     return {0, 0};
@@ -463,7 +448,7 @@ Api::SysCallIntResult Mux::prependAndWrite(const ShimHeader& header, Buffer::Ins
 #endif
   write_buffer_.move(buffer, len);
 
-  Api::SysCallIntResult result = write_buffer_.write(fd);
+  Api::SysCallIntResult result = write_buffer_.write(socket_.fd());
   ENVOY_LOG_MISC(trace, "MUXT write returns: {} ({})", result.rc_, strerror(result.errno_));
 
   if (result.rc_ == -1) {

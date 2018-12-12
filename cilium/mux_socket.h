@@ -220,11 +220,12 @@ protected:
   // Read data from the muxed socket and demux it to "sockets_"
   // May be called from multiple threads
   void readAndDemux(bool upstream);
-  Api::SysCallIntResult prependAndWrite(const ShimHeader& id, Buffer::Instance& buffer, int fd);
+  Api::SysCallIntResult prependAndWrite(const ShimHeader& id, Buffer::Instance& buffer);
 
 private:
-  MuxData* addBuffer(const ShimHeader& id, bool upstream);
+  MuxData* addBuffer(int fd, const ShimHeader& id, bool upstream);
   void removeBuffer_(MuxData* mux_data);
+  void removeBuffer_(int fd);
 
   void onRead();
   void onWrite();

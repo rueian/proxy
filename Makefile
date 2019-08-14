@@ -34,7 +34,7 @@ CLANG_FORMAT ?= clang-format
 BUILDIFIER ?= buildifier
 STRIP ?= $(QUIET) strip
 
-ISTIO_VERSION = 1.2.2
+ISTIO_VERSION = 1.2.4
 
 DOCKER=$(QUIET)docker
 

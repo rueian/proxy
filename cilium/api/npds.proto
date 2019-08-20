@@ -14,6 +14,10 @@ import "validate/validate.proto";
 
 // Each resource name is a network policy identifier.
 service NetworkPolicyDiscoveryService {
+  rpc DeltaNetworkPolicies(stream envoy.api.v2.DeltaDiscoveryRequest)
+      returns (stream envoy.api.v2.DeltaDiscoveryResponse) {
+  }
+
   rpc StreamNetworkPolicies(stream envoy.api.v2.DiscoveryRequest)
       returns (stream envoy.api.v2.DiscoveryResponse) {
   }

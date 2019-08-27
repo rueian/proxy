@@ -7,8 +7,8 @@ workspace(name = "cilium")
 #
 # No other line in this file may have ENVOY_SHA followed by an equals sign!
 #
-ENVOY_SHA = "204283eb00ea8817e10806d0daa3e9b10393ebb9"
-ENVOY_SHA256 = "eca3a3f6406e8afd4321b23affdd5cd09e98bd094ee510ab672f2ea8ffb27cb0"
+ENVOY_SHA = "9ddb95ee406303c484b1ce1d95810f1ca8bfb22d"
+ENVOY_SHA256 = "fcc050c4ca9bcc10499b1497a63c9e5015505963fe72d098d9057db8bc6a561d"
 
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
@@ -46,9 +46,9 @@ go_register_toolchains(go_version = GO_VERSION)
 
 # Dependencies for Istio filters.
 # Cf. https://github.com/istio/proxy.
-# Version 1.2.2
-ISTIO_PROXY_SHA = "568f2b648f7185e8396caf00a5a3a9b306c36416"
-ISTIO_PROXY_SHA256 = "d5dc60ab059febf45bf50e5e5275103921b0b8b5d363f5625bdf4c9f0d2451ab"
+# Version 1.2.5
+ISTIO_PROXY_SHA = "490fa3febe68bd0ced2f92ba29df899896376ced"
+ISTIO_PROXY_SHA256 = "79a7e0340e222cf70aa09587aa0fbb502076fb6c291eb64e4f8eff6784cb7301"
 
 http_archive(
     name = "istio_proxy",

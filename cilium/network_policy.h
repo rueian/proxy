@@ -19,7 +19,7 @@ namespace Envoy {
 namespace Cilium {
 
 class NetworkPolicyMap : public Singleton::Instance,
-                         Envoy::Config::SubscriptionCallbacks,
+                         public Envoy::Config::SubscriptionCallbacks,
                          public std::enable_shared_from_this<NetworkPolicyMap>,
                          public Logger::Loggable<Logger::Id::config> {
 public:
@@ -27,8 +27,6 @@ public:
   NetworkPolicyMap(const LocalInfo::LocalInfo& local_info, Upstream::ClusterManager& cm,
 		   Event::Dispatcher& dispatcher, Runtime::RandomGenerator& random,
 		   Stats::Scope &scope, ThreadLocal::SlotAllocator& tls);
-  NetworkPolicyMap(std::unique_ptr<Envoy::Config::Subscription>&& subscription,
-		   ThreadLocal::SlotAllocator& tls);
   ~NetworkPolicyMap() {
     ENVOY_LOG(debug, "Cilium L7 NetworkPolicyMap({}): NetworkPolicyMap is deleted NOW!", name_);
   }
@@ -38,6 +36,11 @@ public:
   // pointer is formed by the caller of the constructor, hence this
   // can't be called from the constructor!
   void startSubscription() { subscription_->start({}); }
+
+  void startSubscription(std::unique_ptr<Envoy::Config::Subscription>&& subscription) {
+    subscription_ = std::move(subscription);
+    startSubscription();
+  }
 
   void setPolicyNotifier(Cilium::CtMapSharedPtr& ct) { ctmap_ = ct; }
 
@@ -58,8 +61,8 @@ public:
       HttpNetworkPolicyRule(const cilium::HttpNetworkPolicyRule& rule) {
 	ENVOY_LOG(trace, "Cilium L7 HttpNetworkPolicyRule():");
 	for (const auto& header: rule.headers()) {
-	  headers_.emplace_back(header);
-	  const auto& header_data = headers_.back();
+	  headers_.emplace_back(std::make_unique<Envoy::Http::HeaderUtility::HeaderData>(header));
+	  const auto& header_data = *headers_.back();
 	  ENVOY_LOG(trace, "Cilium L7 HttpNetworkPolicyRule(): HeaderData {}={}",
 		    header_data.name_.get(),
 		    header_data.header_match_type_ == Http::HeaderUtility::HeaderMatchType::Range
@@ -76,7 +79,7 @@ public:
 	return Envoy::Http::HeaderUtility::matchHeaders(headers, headers_);
       }
 
-      std::vector<Envoy::Http::HeaderUtility::HeaderData> headers_; // Allowed if empty.
+      std::vector<Envoy::Http::HeaderUtility::HeaderDataPtr> headers_; // Allowed if empty.
     };
     
     class PortNetworkPolicyRule : public Logger::Loggable<Logger::Id::config> {
@@ -321,9 +324,9 @@ public:
     UNREFERENCED_PARAMETER(removed_resources);
     UNREFERENCED_PARAMETER(system_version_info);
   }
-  void onConfigUpdateFailed(const EnvoyException* e) override;
+  void onConfigUpdateFailed(Envoy::Config::ConfigUpdateFailureReason, const EnvoyException* e) override;
   std::string resourceName(const ProtobufWkt::Any& resource) override {
-    return MessageUtil::anyConvert<cilium::NetworkPolicy>(resource, validation_visitor_).name();
+    return MessageUtil::anyConvert<cilium::NetworkPolicy>(resource).name();
   }
 
 private:

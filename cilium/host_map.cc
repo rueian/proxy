@@ -124,6 +124,7 @@ protected:
 
 uint64_t PolicyHostMap::instance_id_ = 0;
 
+// This is used directly for testing with a file-based subscription
 PolicyHostMap::PolicyHostMap(ThreadLocal::SlotAllocator& tls)
     : tls_(tls.allocateSlot()), validation_visitor_(ProtobufMessage::getNullValidationVisitor()) {
   instance_id_++;
@@ -134,13 +135,6 @@ PolicyHostMap::PolicyHostMap(ThreadLocal::SlotAllocator& tls)
   tls_->set([empty_map](Event::Dispatcher&) -> ThreadLocal::ThreadLocalObjectSharedPtr {
       return empty_map;
   });
-}
-
-// This is used for testing with a file-based subscription
-PolicyHostMap::PolicyHostMap(std::unique_ptr<Envoy::Config::Subscription>&& subscription,
-			     ThreadLocal::SlotAllocator& tls)
-  : PolicyHostMap(tls) {
-  subscription_ = std::move(subscription);
 }
 
 // This is used in production
@@ -158,10 +152,10 @@ void PolicyHostMap::onConfigUpdate(const Protobuf::RepeatedPtrField<ProtobufWkt:
   auto newmap = std::make_shared<ThreadLocalHostMapInitializer>();
 
   for (const auto& resource: resources) {
-    auto config = MessageUtil::anyConvert<cilium::NetworkPolicyHosts>(resource, validation_visitor_);
+    auto config = MessageUtil::anyConvert<cilium::NetworkPolicyHosts>(resource);
     ENVOY_LOG(trace, "Received NetworkPolicyHosts for policy {} in onConfigUpdate() version {}", config.policy(), version_info);
 
-    MessageUtil::validate(config);
+    MessageUtil::validate(config, validation_visitor_);
 
     newmap->insert(config);
   }
@@ -182,7 +176,7 @@ void PolicyHostMap::onConfigUpdate(const Protobuf::RepeatedPtrField<ProtobufWkt:
   logmaps("onConfigUpdate");
 }
 
-void PolicyHostMap::onConfigUpdateFailed(const EnvoyException*) {
+void PolicyHostMap::onConfigUpdateFailed(Envoy::Config::ConfigUpdateFailureReason, const EnvoyException*) {
   // We need to allow server startup to continue, even if we have a bad
   // config.
 }

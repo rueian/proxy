@@ -13,6 +13,7 @@ namespace Cilium {
 
 uint64_t NetworkPolicyMap::instance_id_ = 0;
 
+// This is used directly for testing with a file-based subscription
 NetworkPolicyMap::NetworkPolicyMap(ThreadLocal::SlotAllocator& tls)
     : tls_(tls.allocateSlot()), validation_visitor_(ProtobufMessage::getNullValidationVisitor()) {
   instance_id_++;
@@ -22,13 +23,6 @@ NetworkPolicyMap::NetworkPolicyMap(ThreadLocal::SlotAllocator& tls)
   tls_->set([&](Event::Dispatcher&) -> ThreadLocal::ThreadLocalObjectSharedPtr {
       return std::make_shared<ThreadLocalPolicyMap>();
   });
-}
-
-// This is used for testing with a file-based subscription
-NetworkPolicyMap::NetworkPolicyMap(std::unique_ptr<Envoy::Config::Subscription>&& subscription,
-				   ThreadLocal::SlotAllocator& tls)
-  : NetworkPolicyMap(tls) {
-  subscription_ = std::move(subscription);
 }
 
 // This is used in production
@@ -50,12 +44,12 @@ void NetworkPolicyMap::onConfigUpdate(const Protobuf::RepeatedPtrField<ProtobufW
   // Collect a shared vector of policies to be added
   auto to_be_added = std::make_shared<std::vector<std::shared_ptr<PolicyInstance>>>();
   for (const auto& resource: resources) {
-    auto config = MessageUtil::anyConvert<cilium::NetworkPolicy>(resource, validation_visitor_);
+    auto config = MessageUtil::anyConvert<cilium::NetworkPolicy>(resource);
     ENVOY_LOG(debug, "Received Network Policy for endpoint {} in onConfigUpdate() version {}: {}", config.name(), version_info, config.DebugString());
     keeps.insert(config.name());
     ct_maps_to_keep.insert(config.conntrack_map_name());
 
-    MessageUtil::validate(config);
+    MessageUtil::validate(config, validation_visitor_);
 
     // First find the old config to figure out if an update is needed.
     const uint64_t new_hash = MessageUtil::hash(config);
@@ -124,7 +118,7 @@ void NetworkPolicyMap::onConfigUpdate(const Protobuf::RepeatedPtrField<ProtobufW
     });
 }
 
-void NetworkPolicyMap::onConfigUpdateFailed(const EnvoyException*) {
+void NetworkPolicyMap::onConfigUpdateFailed(Envoy::Config::ConfigUpdateFailureReason, const EnvoyException*) {
   // We need to allow server startup to continue, even if we have a bad
   // config.
 }

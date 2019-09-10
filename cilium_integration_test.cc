@@ -235,11 +235,11 @@ public:
     if (is_ingress_) {
       std::string pod_ip = original_dst_address->ip()->addressAsString();
       ENVOY_LOG_MISC(debug, "INGRESS POD_IP: {}", pod_ip);
-      socket.addOption(std::make_shared<Cilium::SocketOption>(npmap_, maps_, 1, 173, true, 80, 10000, std::move(pod_ip)));
+      socket.addOption(std::make_shared<Cilium::SocketOption>(npmap_, maps_, 1, 173, true, 80, 10000, std::move(pod_ip), nullptr));
     } else {
       std::string pod_ip = socket.localAddress()->ip()->addressAsString();
       ENVOY_LOG_MISC(debug, "EGRESS POD_IP: {}", pod_ip);
-      socket.addOption(std::make_shared<Cilium::SocketOption>(npmap_, maps_, 173, hosts_->resolve(socket.localAddress()->ip()), false, 80, 10001, std::move(pod_ip)));
+      socket.addOption(std::make_shared<Cilium::SocketOption>(npmap_, maps_, 173, hosts_->resolve(socket.localAddress()->ip()), false, 80, 10001, std::move(pod_ip), nullptr));
     }
 
     return true;
@@ -270,13 +270,10 @@ createHostMap(const std::string& config, Server::Configuration::ListenerFactoryC
         Envoy::Config::Utility::checkFilesystemSubscriptionBackingPath(path, context.api());
         Envoy::Config::SubscriptionStats stats =
 	  Envoy::Config::Utility::generateStats(context.scope());
-        auto subscription =
-	  std::make_unique<Envoy::Config::FilesystemSubscriptionImpl>(
-	      context.dispatcher(), path, stats, context.api());
-       
-        auto map = std::make_shared<Cilium::PolicyHostMap>(std::move(subscription),
-							   context.threadLocal());
-        map->startSubscription();
+        auto map = std::make_shared<Cilium::PolicyHostMap>(context.threadLocal());
+	auto subscription = std::make_unique<Envoy::Config::FilesystemSubscriptionImpl>(
+            context.dispatcher(), path, *map, stats, ProtobufMessage::getNullValidationVisitor(), context.api());
+        map->startSubscription(std::move(subscription));
         return map;
     });
 }
@@ -290,10 +287,10 @@ createPolicyMap(const std::string& config, Server::Configuration::FactoryContext
 	ENVOY_LOG_MISC(debug, "Loading Cilium Network Policy from file \'{}\' instead of using gRPC", path);
         Envoy::Config::Utility::checkFilesystemSubscriptionBackingPath(path, context.api());
         Envoy::Config::SubscriptionStats stats = Envoy::Config::Utility::generateStats(context.scope());
-        auto subscription = std::make_unique<Envoy::Config::FilesystemSubscriptionImpl>(context.dispatcher(), path, stats, context.api());
-       
-        auto map = std::make_shared<Cilium::NetworkPolicyMap>(std::move(subscription), context.threadLocal());
-	map->startSubscription();
+        auto map = std::make_shared<Cilium::NetworkPolicyMap>(context.threadLocal());
+        auto subscription = std::make_unique<Envoy::Config::FilesystemSubscriptionImpl>(
+            context.dispatcher(), path, *map, stats, ProtobufMessage::getNullValidationVisitor(), context.api());
+	map->startSubscription(std::move(subscription));
 	return map;
       });
 }
@@ -318,7 +315,8 @@ public:
     npmap = createPolicyMap(policy_config, context);
 
 
-    auto config = std::make_shared<Filter::BpfMetadata::TestConfig>(MessageUtil::downcastAndValidate<const ::cilium::BpfMetadata&>(proto_config), context);
+    auto config = std::make_shared<Filter::BpfMetadata::TestConfig>(
+        MessageUtil::downcastAndValidate<const ::cilium::BpfMetadata&>(proto_config, context.messageValidationVisitor()), context);
 
     return [config](
                Network::ListenerFilterManager &filter_manager) mutable -> void {
@@ -360,7 +358,7 @@ public:
   createFilterFactoryFromProto(const Protobuf::Message& proto_config, const std::string&,
                                Server::Configuration::FactoryContext& context) override {
     auto config = std::make_shared<Cilium::Config>(
-        MessageUtil::downcastAndValidate<const ::cilium::L7Policy&>(proto_config), context);
+        MessageUtil::downcastAndValidate<const ::cilium::L7Policy&>(proto_config, context.messageValidationVisitor()), context);
     return [config](
                Http::FilterChainFactoryCallbacks &callbacks) mutable -> void {
       callbacks.addStreamFilter(std::make_shared<Cilium::AccessFilter>(config));
@@ -398,10 +396,6 @@ static_resources:
     lb_policy: ORIGINAL_DST_LB
     connect_timeout:
       seconds: 1
-    hosts:
-    - socket_address:
-        address: 127.0.0.1
-        port_value: 0
   - name: xds-grpc-cilium
     connect_timeout:
       seconds: 5
@@ -488,7 +482,7 @@ public:
     response->waitForEndStream();
 
     uint64_t status;
-    absl::SimpleAtoi(response->headers().Status()->value().getStringView(), &status);
+    EXPECT_EQ(true, absl::SimpleAtoi(response->headers().Status()->value().getStringView(), &status));
     EXPECT_EQ(403, status);
   }
 
@@ -499,7 +493,7 @@ public:
     auto response = sendRequestAndWaitForResponse(headers, 0, default_response_headers_, 0);
 
     uint64_t status;
-    absl::SimpleAtoi(response->headers().Status()->value().getStringView(), &status);
+    EXPECT_EQ(true, absl::SimpleAtoi(response->headers().Status()->value().getStringView(), &status));
     EXPECT_EQ(200, status);
   }
 
@@ -508,7 +502,7 @@ public:
     envoy::api::v2::DiscoveryResponse message;
     ThreadLocal::InstanceImpl tls;
 
-    MessageUtil::loadFromFile(path, message, *api_.get());
+    MessageUtil::loadFromFile(path, message, ProtobufMessage::getNullValidationVisitor(), *api_.get());
     Envoy::Cilium::PolicyHostMap hmap(tls);
 
     EXPECT_THROW_WITH_MESSAGE(hmap.onConfigUpdate(message.resources(), "1"), EnvoyException, exmsg);
@@ -549,7 +543,7 @@ resources:
   envoy::api::v2::DiscoveryResponse message;
   ThreadLocal::InstanceImpl tls;
 
-  MessageUtil::loadFromFile(path, message, *api_.get());
+  MessageUtil::loadFromFile(path, message, ProtobufMessage::getNullValidationVisitor(), *api_.get());
   auto hmap = std::make_shared<Envoy::Cilium::PolicyHostMap>(tls);
 
   VERBOSE_EXPECT_NO_THROW(hmap->onConfigUpdate(message.resources(), "2"));
@@ -819,7 +813,7 @@ TEST_P(CiliumIntegrationTest, DuplicatePort) {
   response->waitForEndStream();
 
   uint64_t status;
-  absl::SimpleAtoi(response->headers().Status()->value().getStringView(), &status);
+  EXPECT_EQ(true, absl::SimpleAtoi(response->headers().Status()->value().getStringView(), &status));
   EXPECT_EQ(403, status);
 }
 
@@ -899,10 +893,6 @@ static_resources:
     lb_policy: ORIGINAL_DST_LB
     connect_timeout:
       seconds: 1
-    hosts:
-    - socket_address:
-        address: 127.0.0.1
-        port_value: 0
   - name: xds-grpc-cilium
     connect_timeout:
       seconds: 5
@@ -1184,10 +1174,6 @@ static_resources:
     lb_policy: ORIGINAL_DST_LB
     connect_timeout:
       seconds: 1
-    hosts:
-    - socket_address:
-        address: 127.0.0.1
-        port_value: 0
   - name: xds-grpc-cilium
     connect_timeout:
       seconds: 5
@@ -1378,10 +1364,6 @@ static_resources:
     lb_policy: ORIGINAL_DST_LB
     connect_timeout:
       seconds: 1
-    hosts:
-    - socket_address:
-        address: 127.0.0.1
-        port_value: 0
   - name: xds-grpc-cilium
     connect_timeout:
       seconds: 5
@@ -1607,7 +1589,7 @@ TEST_F(CiliumTest, AccessLog) {
   stream_info.start_time_ = time_system_.systemTime();
   Network::MockConnection connection;
   Network::Socket::OptionsSharedPtr options = std::make_shared<Network::Socket::Options>();
-  options->push_back(std::make_shared<Cilium::SocketOption>(nullptr, nullptr, 1, 173, true, 80, 10000, "1.2.3.4"));
+  options->push_back(std::make_shared<Cilium::SocketOption>(nullptr, nullptr, 1, 173, true, 80, 10000, "1.2.3.4", nullptr));
   local_address_ = std::make_shared<Network::Address::Ipv4Instance>("1.2.3.4", 80);
   remote_address_ = std::make_shared<Network::Address::Ipv4Instance>("5.6.7.8", 45678);
 

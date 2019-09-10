@@ -7,29 +7,16 @@ workspace(name = "cilium")
 #
 # No other line in this file may have ENVOY_SHA followed by an equals sign!
 #
-ENVOY_SHA = "bf169f9d3c8f4c682650c5390c088a4898940913"
-ENVOY_SHA256 = "f1ecdf7d636a8280db77d41b1a7e7669b6bb0cccb910bb039f7b76ce254b0e39"
+ENVOY_SHA = "9c34f48147b84105b3e90ad8ffda26a886861ff5"
+ENVOY_SHA256 = "27e3f407a09f3eff43029846c72764c203163b4ec509674bd1983d25961e4f00"
 
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
 http_archive(
     name = "envoy",
-    url = "https://github.com/envoyproxy/envoy/archive/" + ENVOY_SHA + ".tar.gz",
+    url = "https://github.com/jrajahalme/envoy/archive/" + ENVOY_SHA + ".tar.gz",
     sha256 = ENVOY_SHA256,
     strip_prefix = "envoy-" + ENVOY_SHA,
-    patches = [
-        "@//patches:1.11.1-0001-http2-Limit-the-number-of-outbound-frames-9.patch",
-        "@//patches:1.11.1-0002-http2-limit-the-number-of-inbound-frames.-20.patch",
-        "@//patches:1.11.1-0003-http2-enable-strict-validation-of-HTTP-2-headers.-19.patch",
-        "@//patches:1.11.1-0004-Always-disable-reads-when-connection-is-closed-with-.patch",
-        "@//patches:1.11.1-0005-release-bump-to-1.11.1.patch",
-        "@//patches:1.11.1-0006-Fix-flaky-http2-integration-tests-29.patch",
-        "@//patches:1.11.1-0007-runtime-changing-snapshot-access-to-be-const-7677-26.patch",
-        "@//patches:1.11.1-0008-runtime-making-runtime-accessible-from-non-worker-th.patch",
-        "@//patches:1.11.1-0009-Disable-outbound-flood-mitigation-through-runtime-co.patch",
-        "@//patches:1.11.1-0010-runtime-add-the-ability-to-log-downstream-HTTP-2-att.patch",
-    ],
-    patch_args = ["-p1"],
 )
 
 #
@@ -40,22 +27,18 @@ http_archive(
 #   the workspace above.
 # - loads of "//..." need to be renamed as "@envoy//..."
 #
+
+load("@envoy//bazel:api_binding.bzl", "envoy_api_binding")
+envoy_api_binding()
+
 load("@envoy//bazel:api_repositories.bzl", "envoy_api_dependencies")
 envoy_api_dependencies()
 
-load("@envoy//bazel:repositories.bzl", "envoy_dependencies", "GO_VERSION")
-load("@envoy//bazel:cc_configure.bzl", "cc_configure")
+load("@envoy//bazel:repositories.bzl", "envoy_dependencies")
 envoy_dependencies()
 
-load("@rules_foreign_cc//:workspace_definitions.bzl", "rules_foreign_cc_dependencies")
-rules_foreign_cc_dependencies()
-
-cc_configure()
-
-load("@io_bazel_rules_go//go:deps.bzl", "go_register_toolchains", "go_rules_dependencies")
-go_rules_dependencies()
-go_register_toolchains(go_version = GO_VERSION)
-
+load("@envoy//bazel:dependency_imports.bzl", "envoy_dependency_imports")
+envoy_dependency_imports()
 
 # Dependencies for Istio filters.
 # Cf. https://github.com/istio/proxy.

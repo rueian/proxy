@@ -25,7 +25,7 @@ envoy_cc_library(
         "@envoy//include/envoy/config:subscription_interface",
         "@envoy//include/envoy/singleton:manager_interface",
         "@envoy//source/common/router:config_utility_lib",
-        "//cilium/api:npds_cc",
+        "//cilium/api:npds_cc_proto",
         "//cilium:accesslog_lib",
         "//cilium:conntrack_lib",
         "//cilium:grpc_subscription_lib",
@@ -58,8 +58,12 @@ envoy_cc_library(
     repository = "@envoy",
     deps = [
         "@envoy//source/exe:envoy_common_lib",
-        "@envoy//source/common/config:subscription_factory_lib",
-        "@envoy_api//envoy/api/v2/core:config_source_cc",
+        "@envoy//source/common/config:grpc_mux_lib",
+        "@envoy//source/common/config:grpc_mux_subscription_lib",
+        "@envoy//include/envoy/config:subscription_interface",
+        "@envoy//include/envoy/event:dispatcher_interface",
+        "@envoy//include/envoy/grpc:async_client_interface",
+        "@envoy_api//envoy/api/v2/core:pkg_cc_proto",
     ],
 )
 
@@ -75,7 +79,7 @@ envoy_cc_library(
     repository = "@envoy",
     deps = [
         "@envoy//include/envoy/config:subscription_interface",
-        "//cilium/api:l7policy_cc",
+        "//cilium/api:l7policy_cc_proto",
         "//cilium:accesslog_lib",
         "//cilium:network_policy_lib",
         "//cilium:socket_option_lib",
@@ -95,7 +99,7 @@ envoy_cc_library(
     deps = [
         "@envoy//source/exe:envoy_common_lib",
         "//cilium:socket_option_lib",
-        "//cilium/api:accesslog_proto_cc",
+        "//cilium/api:accesslog_proto_cc_proto",
     ],
 )
 
@@ -213,7 +217,7 @@ envoy_cc_library(
         "@envoy//source/common/common:assert_lib",
         "@envoy//source/common/common:logger_lib",
         "@envoy//source/common/network:address_lib",
-        "//cilium/api:network_filter_cc",
+        "//cilium/api:network_filter_cc_proto",
         "//cilium:conntrack_lib",
         "//cilium:network_policy_lib",
         "//cilium:proxylib_lib",
@@ -246,8 +250,8 @@ envoy_cc_library(
         "@envoy//source/common/common:logger_lib",
         "@envoy//source/common/network:address_lib",
         "@envoy//source/common/router:config_utility_lib",
-        "//cilium/api:bpf_metadata_cc",
-        "//cilium/api:nphds_cc",
+        "//cilium/api:bpf_metadata_cc_proto",
+        "//cilium/api:nphds_cc_proto",
         "//cilium:conntrack_lib",
         "//cilium:grpc_subscription_lib",
         "//cilium:ipcache_lib",

@@ -1,0 +1,46 @@
+diff --git a/source/common/network/connection_impl.cc b/source/common/network/connection_impl.cc
+index a5f1b4e7b..61d9ef626 100644
+--- a/source/common/network/connection_impl.cc
++++ b/source/common/network/connection_impl.cc
+@@ -45,13 +45,17 @@ void ConnectionImplUtility::updateBufferStats(uint64_t delta, uint64_t new_total
+ std::atomic<uint64_t> ConnectionImpl::next_global_id_;
+ 
+ ConnectionImpl::ConnectionImpl(Event::Dispatcher& dispatcher, ConnectionSocketPtr&& socket,
+-                               TransportSocketPtr&& transport_socket, bool connected)
++                               TransportSocketPtr&& transport_socket, bool connected,
++                               const Network::ConnectionSocket::OptionsSharedPtr& options)
+     : transport_socket_(std::move(transport_socket)), socket_(std::move(socket)),
+       filter_manager_(*this), stream_info_(dispatcher.timeSource()),
+       write_buffer_(
+           dispatcher.getWatermarkFactory().create([this]() -> void { this->onLowWatermark(); },
+                                                   [this]() -> void { this->onHighWatermark(); })),
+       dispatcher_(dispatcher), id_(next_global_id_++) {
++  if (options) {
++    socket_->addOptions(options);
++  }
+   // Treat the lack of a valid fd (which in practice only happens if we run out of FDs) as an OOM
+   // condition and just crash.
+   RELEASE_ASSERT(ioHandle().fd() != -1, "");
+@@ -664,7 +668,7 @@ ClientConnectionImpl::ClientConnectionImpl(
+     Network::TransportSocketPtr&& transport_socket,
+     const Network::ConnectionSocket::OptionsSharedPtr& options)
+     : ConnectionImpl(dispatcher, std::make_unique<ClientSocketImpl>(remote_address),
+-                     std::move(transport_socket), false) {
++                     std::move(transport_socket), false, options) {
+   // There are no meaningful socket options or source address semantics for
+   // non-IP sockets, so skip.
+   if (remote_address->ip() != nullptr) {
+diff --git a/source/common/network/connection_impl.h b/source/common/network/connection_impl.h
+index 96bb32693..1dc3fde51 100644
+--- a/source/common/network/connection_impl.h
++++ b/source/common/network/connection_impl.h
+@@ -51,7 +51,8 @@ class ConnectionImpl : public FilterManagerConnection,
+                        protected Logger::Loggable<Logger::Id::connection> {
+ public:
+   ConnectionImpl(Event::Dispatcher& dispatcher, ConnectionSocketPtr&& socket,
+-                 TransportSocketPtr&& transport_socket, bool connected);
++                 TransportSocketPtr&& transport_socket, bool connected,
++		 const Network::ConnectionSocket::OptionsSharedPtr& options = nullptr);
+ 
+   ~ConnectionImpl() override;
+ 

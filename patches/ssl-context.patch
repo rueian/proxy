@@ -1,0 +1,42 @@
+diff --git a/include/envoy/server/filter_config.h b/include/envoy/server/filter_config.h
+index 4864d5bf9..ceb9e39f1 100644
+--- a/include/envoy/server/filter_config.h
++++ b/include/envoy/server/filter_config.h
+@@ -183,6 +183,16 @@ public:
+    * @return ProcessContext& a reference to the process context.
+    */
+   virtual ProcessContext& processContext() PURE;
++
++  /**
++   * @return Ssl::ContextManager& a reference to the SSL context manager.
++   */
++  virtual Ssl::ContextManager& sslContextManager() PURE;
++
++  /**
++   * @return the server-wide stats store.
++   */
++  virtual Stats::Store& stats() PURE;
+ };
+ 
+ class ListenerFactoryContext : public virtual FactoryContext {
+diff --git a/source/server/listener_manager_impl.h b/source/server/listener_manager_impl.h
+index b634a1bf6..1841f9c33 100644
+--- a/source/server/listener_manager_impl.h
++++ b/source/server/listener_manager_impl.h
+@@ -9,6 +9,7 @@
+ #include "envoy/server/listener_manager.h"
+ #include "envoy/server/transport_socket_config.h"
+ #include "envoy/server/worker.h"
++#include "envoy/ssl/context_manager.h"
+ #include "envoy/stats/scope.h"
+ 
+ #include "common/common/logger.h"
+@@ -325,6 +326,8 @@ public:
+     return parent_.server_.lifecycleNotifier();
+   }
+   ProcessContext& processContext() override { return parent_.server_.processContext(); }
++  Ssl::ContextManager& sslContextManager() override { return parent_.server_.sslContextManager(); }
++  Stats::Store& stats() override { return parent_.server_.stats(); }
+ 
+   // Network::DrainDecision
+   bool drainClose() const override;

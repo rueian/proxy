@@ -7,8 +7,8 @@ workspace(name = "cilium")
 #
 # No other line in this file may have ENVOY_SHA followed by an equals sign!
 #
-ENVOY_SHA = "9c34f48147b84105b3e90ad8ffda26a886861ff5"
-ENVOY_SHA256 = "27e3f407a09f3eff43029846c72764c203163b4ec509674bd1983d25961e4f00"
+ENVOY_SHA = "abf7dbc6121ba1871777d06fe0f0a318ef72a0e7"
+ENVOY_SHA256 = "30c55a3061f8cd25c03f80b50bf509f0a220bb399edc369e689afe2af493a2b7"
 
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
@@ -17,6 +17,9 @@ http_archive(
     url = "https://github.com/jrajahalme/envoy/archive/" + ENVOY_SHA + ".tar.gz",
     sha256 = ENVOY_SHA256,
     strip_prefix = "envoy-" + ENVOY_SHA,
+    patches = [
+    ],
+    patch_args = ["-p1"],
 )
 
 #

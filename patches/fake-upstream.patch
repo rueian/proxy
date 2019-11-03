@@ -1,0 +1,72 @@
+diff --git a/test/integration/fake_upstream.cc b/test/integration/fake_upstream.cc
+index f55806361..d52fda9f0 100644
+--- a/test/integration/fake_upstream.cc
++++ b/test/integration/fake_upstream.cc
+@@ -384,9 +384,10 @@ FakeUpstream::FakeUpstream(uint32_t port, FakeHttpConnection::Type type,
+ 
+ FakeUpstream::FakeUpstream(Network::TransportSocketFactoryPtr&& transport_socket_factory,
+                            uint32_t port, FakeHttpConnection::Type type,
+-                           Network::Address::IpVersion version, Event::TestTimeSystem& time_system)
++                           Network::Address::IpVersion version, Event::TestTimeSystem& time_system,
++                           bool enable_half_close)
+     : FakeUpstream(std::move(transport_socket_factory), makeTcpListenSocket(port, version), type,
+-                   time_system, false) {
++                   time_system, enable_half_close) {
+   ENVOY_LOG(info, "starting fake SSL server on port {}. Address version is {}",
+             this->localAddress()->ip()->port(), Network::Test::addressVersionAsString(version));
+ }
+@@ -473,7 +474,9 @@ AssertionResult FakeUpstream::waitForHttpConnection(Event::Dispatcher& client_di
+                                                       time_system, max_request_headers_kb);
+   }
+   VERIFY_ASSERTION(connection->initialize());
+-  VERIFY_ASSERTION(connection->readDisable(false));
++  if (read_disable_on_new_connection_) {
++    VERIFY_ASSERTION(connection->readDisable(false));
++  }
+   return AssertionSuccess();
+ }
+ 
+@@ -503,7 +506,9 @@ FakeUpstream::waitForHttpConnection(Event::Dispatcher& client_dispatcher,
+             upstream.timeSystem(), Http::DEFAULT_MAX_REQUEST_HEADERS_KB);
+         lock.release();
+         VERIFY_ASSERTION(connection->initialize());
+-        VERIFY_ASSERTION(connection->readDisable(false));
++        if (upstream.read_disable_on_new_connection_) {
++          VERIFY_ASSERTION(connection->readDisable(false));
++        }
+         return AssertionSuccess();
+       }
+     }
+@@ -527,7 +532,9 @@ AssertionResult FakeUpstream::waitForRawConnection(FakeRawConnectionPtr& connect
+     connection = std::make_unique<FakeRawConnection>(consumeConnection(), timeSystem());
+   }
+   VERIFY_ASSERTION(connection->initialize());
+-  VERIFY_ASSERTION(connection->readDisable(false));
++  if (read_disable_on_new_connection_) {
++    VERIFY_ASSERTION(connection->readDisable(false));
++  }
+   VERIFY_ASSERTION(connection->enableHalfClose(enable_half_close_));
+   return AssertionSuccess();
+ }
+diff --git a/test/integration/fake_upstream.h b/test/integration/fake_upstream.h
+index 444ae0c11..e1ebe4151 100644
+--- a/test/integration/fake_upstream.h
++++ b/test/integration/fake_upstream.h
+@@ -394,7 +394,7 @@ protected:
+   FakeConnectionBase(SharedConnectionWrapper& shared_connection, Event::TestTimeSystem& time_system)
+       : shared_connection_(shared_connection), time_system_(time_system) {}
+ 
+-  Common::CallbackHandle* disconnect_callback_handle_;
++  Common::CallbackHandle* disconnect_callback_handle_{};
+   SharedConnectionWrapper& shared_connection_;
+   bool initialized_{};
+   Thread::CondVar connection_event_;
+@@ -530,7 +530,7 @@ public:
+                Event::TestTimeSystem& time_system, bool enable_half_close = false);
+   FakeUpstream(Network::TransportSocketFactoryPtr&& transport_socket_factory, uint32_t port,
+                FakeHttpConnection::Type type, Network::Address::IpVersion version,
+-               Event::TestTimeSystem& time_system);
++               Event::TestTimeSystem& time_system, bool enable_half_close = false);
+   ~FakeUpstream() override;
+ 
+   FakeHttpConnection::Type httpType() { return http_type_; }

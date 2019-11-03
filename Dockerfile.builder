@@ -41,12 +41,10 @@ RUN export BAZEL_VERSION=`cat BAZEL_VERSION` \
 	&& rm bazel-${BAZEL_VERSION}-installer-linux-x86_64.sh
 
 #
-# Extract Envoy source version (git SHA) from WORKSPACE
 # Build and keep the cache
 #
 RUN \
-	grep "ENVOY_SHA[ \t]*=" WORKSPACE | cut -d \" -f 2 > SOURCE_VERSION \
-	&& make PKG_BUILD=1 cilium-envoy && rm ./bazel-bin/cilium-envoy
+    	make BAZEL_BUILD_OPTS=--jobs=1 PKG_BUILD=1 cilium-envoy && rm ./bazel-bin/cilium-envoy
 
 #
 # Absolutely nothing after making envoy deps!

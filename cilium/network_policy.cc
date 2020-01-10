@@ -403,9 +403,13 @@ protected:
 	found_port_rule = true;
       }
 
-      // No policy for the port was found. Cilium always creates a policy for redirects it
-      // creates, so the host proxy never gets here. Sidecar gets all the traffic, which we need
-      // to pass through since the bpf datapath already allowed it.
+      // No policy for the port was found. Cilium always creates a
+      // policy for normal policy redirects it creates, so the host
+      // proxy never gets here for an endpoint with a defined network
+      // policy. Endpoints in visibility mode may redirect traffic
+      // even without a policy. Istio sidecars also get all the
+      // traffic. In both cases we need to pass the traffic through
+      // since the bpf datapath already allowed it.
       return found_port_rule ? false : true;
     }
 
@@ -446,10 +450,15 @@ public:
     return conntrack_map_name_;
   }
 
+  const std::shared_ptr<const PolicyInstance>& GetPolicyInstance() const override {
+    return dedup_policy_;
+  }
+
 public:
   std::string conntrack_map_name_;
   uint64_t hash_;
   const cilium::NetworkPolicy policy_proto_;
+  std::shared_ptr<const PolicyInstance> dedup_policy_{nullptr};
 
 private:
   const PortNetworkPolicy ingress_;
@@ -523,10 +532,11 @@ void NetworkPolicyMap::onConfigUpdate(const Protobuf::RepeatedPtrField<ProtobufW
   std::unordered_set<std::string> ct_maps_to_keep;
 
   // Collect a shared vector of policies to be added
-  auto to_be_added = std::make_shared<std::vector<std::shared_ptr<PolicyInstanceImpl>>>();
+  auto to_be_added = std::make_shared<std::unordered_map<std::string, std::shared_ptr<PolicyInstanceImpl>>>();
   for (const auto& resource: resources) {
     auto config = MessageUtil::anyConvert<cilium::NetworkPolicy>(resource);
-    ENVOY_LOG(debug, "Received Network Policy for endpoint {} in onConfigUpdate() version {}", config.name(), version_info);
+    ENVOY_LOG(debug, "Received Network Policy for endpoint {} (->{}) in onConfigUpdate() version {}",
+	      config.name(), config.policy_name(), version_info);
     keeps.insert(config.name());
     ct_maps_to_keep.insert(config.conntrack_map_name());
 
@@ -542,7 +552,7 @@ void NetworkPolicyMap::onConfigUpdate(const Protobuf::RepeatedPtrField<ProtobufW
     }
 
     // May throw
-    to_be_added->emplace_back(std::make_shared<PolicyInstanceImpl>(*this, new_hash, config));
+    to_be_added->emplace(config.name(), std::make_shared<PolicyInstanceImpl>(*this, new_hash, config));
   }
 
   // Collect a shared vector of policy names to be removed
@@ -559,6 +569,19 @@ void NetworkPolicyMap::onConfigUpdate(const Protobuf::RepeatedPtrField<ProtobufW
 	cts_to_be_closed->find(ct_map_name) == cts_to_be_closed->end()) {
       ENVOY_LOG(debug, "Closing conntrack map {}", ct_map_name);
       cts_to_be_closed->insert(ct_map_name);
+    }
+  }
+
+  // Process references between policies
+  for (const auto& pair: *to_be_added) {
+    auto dedup_name = pair.second->policy_proto_.policy_name();
+    if (dedup_name.length() > 0) {
+      ENVOY_LOG(debug, "Cilium resolving refence from endpoint {} to policy {}", pair.first, dedup_name);
+      const auto& it = to_be_added->find(dedup_name);
+      if (it == to_be_added->cend()) {
+        throw EnvoyException(fmt::format("NetworkPolicy: undefined reference to 'policy_name' \'{}\'", dedup_name));
+      }
+      pair.second->dedup_policy_ = it->second;
     }
   }
 
@@ -579,9 +602,9 @@ void NetworkPolicyMap::onConfigUpdate(const Protobuf::RepeatedPtrField<ProtobufW
 	  ENVOY_LOG(trace, "Cilium deleting removed network policy for endpoint {}", policy_name);
 	  npmap.erase(policy_name);
 	}
-	for (const auto& new_policy: *to_be_added) {
-	  ENVOY_LOG(trace, "Cilium updating network policy for endpoint {}", new_policy->policy_proto_.name());
-	  npmap[new_policy->policy_proto_.name()] = new_policy;
+	for (const auto& pair: *to_be_added) {
+	  ENVOY_LOG(trace, "Cilium updating network policy for endpoint {}", pair.first);
+	  npmap[pair.first] = pair.second;
 	}
       } else {
 	// Keep this at info level for now to see if this happens in the wild

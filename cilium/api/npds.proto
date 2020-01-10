@@ -29,9 +29,17 @@ service NetworkPolicyDiscoveryService {
 // A network policy that is enforced by a filter on the network flows to/from
 // associated hosts.
 message NetworkPolicy {
-  // The unique identifier of the network policy.
+  // The unique identifier of the network policy. Typically this is the
+  // standard string representation of the endpoint's IP address.
   // Required.
   string name = 1;
+
+  // Reference to another identical policy. If given, the policy
+  // lookup for 'name' will be performed using the 'policy_name'
+  // instead.  This can be used to reduce duplication of identical
+  // policies.
+  // Optional.
+  string policy_name = 6;
 
   // The policy identifier associated with the network policy. Corresponds to
   // remote_policies entries in PortNetworkPolicyRule.
@@ -42,14 +50,18 @@ message NetworkPolicy {
   // of per-port network policies, one per destination L4 port.
   // Every PortNetworkPolicy element in this set has a unique port / protocol
   // combination.
-  // Optional. If empty, all flows in this direction are denied.
+  // Optional. If empty, all flows in this direction are allowed. This is
+  // required so that sidecars and visibility mode passed traffic when no
+  // policy is configured.
   repeated PortNetworkPolicy ingress_per_port_policies = 3;
 
   // The part of the policy to be enforced at egress by the filter, as a set
   // of per-port network policies, one per destination L4 port.
   // Every PortNetworkPolicy element in this set has a unique port / protocol
   // combination.
-  // Optional. If empty, all flows in this direction are denied.
+  // Optional. If empty, all flows in this direction are allowed. This is
+  // required so that sidecars and visibility mode passed traffic when no
+  // policy is configured.
   repeated PortNetworkPolicy egress_per_port_policies = 4;
 
   // Name of the conntrack map to use with this policy.

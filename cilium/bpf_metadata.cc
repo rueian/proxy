@@ -177,7 +177,7 @@ bool Config::getMetadata(Network::ConnectionSocket& socket) {
     ENVOY_LOG_MISC(debug, "EGRESS POD IP: {}, destination IP: {}", pod_ip, other_ip);
   }
 
-  const auto& policy = npmap_->GetPolicyInstance(pod_ip);
+  std::shared_ptr<const Envoy::Cilium::PolicyInstance> policy = npmap_->GetPolicyInstance(pod_ip);
 
   // Resolve the source security ID, if not already resolved
   if (source_identity == 0) {
@@ -228,6 +228,11 @@ bool Config::getMetadata(Network::ConnectionSocket& socket) {
     socket.addOptions(Network::SocketOptionFactory::buildIpTransparentOptions());
   } else {
     src_address = nullptr;
+  }
+
+  auto& dedup = policy->GetPolicyInstance();
+  if (dedup != nullptr) {
+    policy = dedup;
   }
 
   // Pass the metadata to an Envoy socket option we can retrieve

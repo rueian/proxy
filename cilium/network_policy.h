@@ -31,7 +31,9 @@ public:
   virtual Ssl::ContextSharedPtr getServerTlsContext() const PURE;
   virtual Ssl::ContextSharedPtr getClientTlsContext() const PURE;
 };
-    
+
+class PolicyInstance;
+ 
 class PolicyInstance {
 public:
   virtual ~PolicyInstance() = default;
@@ -47,6 +49,9 @@ public:
 			   std::string& l7_proto) const PURE;
 
   virtual const std::string& conntrackName() const PURE;
+
+  // return the actual policy instance, or nullptr if should use the current on
+  virtual const std::shared_ptr<const PolicyInstance>& GetPolicyInstance() const PURE;
 };
 
 class PolicyInstanceImpl;

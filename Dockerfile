@@ -15,7 +15,7 @@ ARG V
 # as that will mess with caching for incremental builds!
 #
 RUN ./tools/get_workspace_status
-RUN make BAZEL_BUILD_OPTS=--jobs=2 PKG_BUILD=1 V=$V DESTDIR=/tmp/install cilium-envoy install
+RUN make BAZEL_BUILD_OPTS=--jobs=1 PKG_BUILD=1 V=$V DESTDIR=/tmp/install cilium-envoy install
 
 #
 # Extract installed cilium-envoy binaries to an otherwise empty image

@@ -44,6 +44,12 @@ public:
     }
 
     if (src_address_) {
+      int on = 1;
+      rc = setsockopt(socket.ioHandle().fd(), SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+      if (rc < 0) {
+	ENVOY_LOG(critical, "Socket option failure. Failed to set SO_REUSEADDR: {}", strerror(errno));
+	return false;
+      }
       socket.setLocalAddress(src_address_);
     }
 

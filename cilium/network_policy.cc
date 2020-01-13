@@ -576,7 +576,7 @@ void NetworkPolicyMap::onConfigUpdate(const Protobuf::RepeatedPtrField<ProtobufW
   for (const auto& pair: *to_be_added) {
     auto dedup_name = pair.second->policy_proto_.policy_name();
     if (dedup_name.length() > 0) {
-      ENVOY_LOG(debug, "Cilium resolving refence from endpoint {} to policy {}", pair.first, dedup_name);
+      ENVOY_LOG(debug, "Cilium resolving reference from endpoint {} to policy {}", pair.first, dedup_name);
       const auto& it = to_be_added->find(dedup_name);
       if (it == to_be_added->cend()) {
         throw EnvoyException(fmt::format("NetworkPolicy: undefined reference to 'policy_name' \'{}\'", dedup_name));

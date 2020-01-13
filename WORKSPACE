@@ -19,6 +19,7 @@ http_archive(
     strip_prefix = "envoy-" + ENVOY_SHA,
     patches = [
         "@//patches:sni_support_fix.patch",
+        "@//patches:client_connection_no_linger.patch",
     ],
     patch_args = ["-p1"],
 )

@@ -1,0 +1,50 @@
+diff --git a/source/common/network/connection_impl.cc b/source/common/network/connection_impl.cc
+index 96a0bc9fa..0bd1fdc5f 100644
+--- a/source/common/network/connection_impl.cc
++++ b/source/common/network/connection_impl.cc
+@@ -13,6 +13,7 @@
+ #include "envoy/event/timer.h"
+ #include "envoy/network/filter.h"
+ 
++#include "common/api/os_sys_calls_impl.h"
+ #include "common/common/assert.h"
+ #include "common/common/empty_string.h"
+ #include "common/common/enum_to_int.h"
+@@ -707,6 +708,23 @@ ClientConnectionImpl::ClientConnectionImpl(
+   }
+ }
+ 
++void ClientConnectionImpl::close(ConnectionCloseType type) {
++  // Avoid sockets lingering in TIME-WAIT state after closing without flushing.
++  if (type == ConnectionCloseType::NoFlush) {
++    struct linger sl;
++    sl.l_onoff = 1;   /* 1 to enable */
++    sl.l_linger = 0;  /* 0 for TCP RST instead of a timeout */
++    auto& os_syscalls = Api::OsSysCallsSingleton::get();
++    const Api::SysCallIntResult result =
++        os_syscalls.setsockopt(ioHandle().fd(), SOL_SOCKET, SO_LINGER, &sl, sizeof(sl));
++    if (result.rc_ != 0) {
++      ENVOY_LOG(debug, "Socket option failure. Failed to set SO_LINGER: {}", strerror(errno));
++    }
++  }
++
++  ConnectionImpl::close(type);
++}
++
+ void ClientConnectionImpl::connect() {
+   ENVOY_CONN_LOG(debug, "connecting to {}", *this, socket_->remoteAddress()->asString());
+   const Api::SysCallIntResult result = socket_->remoteAddress()->connect(ioHandle().fd());
+diff --git a/source/common/network/connection_impl.h b/source/common/network/connection_impl.h
+index d62f5e898..a55355308 100644
+--- a/source/common/network/connection_impl.h
++++ b/source/common/network/connection_impl.h
+@@ -232,6 +232,9 @@ public:
+                        Network::TransportSocketPtr&& transport_socket,
+                        const Network::ConnectionSocket::OptionsSharedPtr& options);
+ 
++  // ConnectionImpl
++  void close(ConnectionCloseType type) override;
++
+   // Network::ClientConnection
+   void connect() override;
+ };

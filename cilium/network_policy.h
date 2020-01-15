@@ -50,7 +50,7 @@ public:
 
   virtual const std::string& conntrackName() const PURE;
 
-  // return the actual policy instance, or nullptr if should use the current on
+  // return the actual policy instance, or nullptr if should use the current one
   virtual const std::shared_ptr<const PolicyInstance>& GetPolicyInstance() const PURE;
 };
 

@@ -543,9 +543,12 @@ void NetworkPolicyMap::onConfigUpdate(const Protobuf::RepeatedPtrField<ProtobufW
     MessageUtil::validate(config, validation_visitor_);
 
     // First find the old config to figure out if an update is needed.
+    // Updates on old policies referring to other policies may be needed
+    // so we include them in 'to_be_added' (they are cheap to process).
     const uint64_t new_hash = MessageUtil::hash(config);
     const auto& old_policy = GetPolicyInstanceImpl(config.name());
-    if (old_policy && old_policy->hash_ == new_hash &&
+    if (old_policy && old_policy->policy_proto_.policy_name().length() == 0 &&
+	old_policy->hash_ == new_hash &&
 	Protobuf::util::MessageDifferencer::Equals(old_policy->policy_proto_, config)) {
       ENVOY_LOG(trace, "New policy is equal to old one, not updating.");
       continue;
@@ -577,11 +580,30 @@ void NetworkPolicyMap::onConfigUpdate(const Protobuf::RepeatedPtrField<ProtobufW
     auto dedup_name = pair.second->policy_proto_.policy_name();
     if (dedup_name.length() > 0) {
       ENVOY_LOG(debug, "Cilium resolving reference from endpoint {} to policy {}", pair.first, dedup_name);
+
+      // Check updated policies first
       const auto& it = to_be_added->find(dedup_name);
-      if (it == to_be_added->cend()) {
-        throw EnvoyException(fmt::format("NetworkPolicy: undefined reference to 'policy_name' \'{}\'", dedup_name));
+      if (it != to_be_added->cend()) {
+	if (it->second->policy_proto_.policy_name().length() > 0) {
+	  throw EnvoyException(fmt::format("NetworkPolicy: reference to non-terminal policy \'{}\'", dedup_name));
+	}
+	pair.second->dedup_policy_ = it->second;
+      } else {
+	// Check that the referred policy is not being deleted
+	if (keeps.find(dedup_name) == keeps.end()) {
+	  throw EnvoyException(fmt::format("NetworkPolicy: reference to deleted old policy \'{}\'", dedup_name));
+	}
+	// Check old policies before throwing
+	const auto& old_policy = GetPolicyInstanceImpl(dedup_name);
+	if (old_policy) {
+	  if (old_policy->policy_proto_.policy_name().length() > 0) {
+	    throw EnvoyException(fmt::format("NetworkPolicy: reference to non-terminal old policy \'{}\'", dedup_name));
+	  }
+	  pair.second->dedup_policy_ = old_policy;
+	} else {
+	  throw EnvoyException(fmt::format("NetworkPolicy: undefined reference to 'policy_name' \'{}\'", dedup_name));
+	}
       }
-      pair.second->dedup_policy_ = it->second;
     }
   }
 

@@ -535,7 +535,7 @@ void NetworkPolicyMap::onConfigUpdate(const Protobuf::RepeatedPtrField<ProtobufW
   auto to_be_added = std::make_shared<std::unordered_map<std::string, std::shared_ptr<PolicyInstanceImpl>>>();
   for (const auto& resource: resources) {
     auto config = MessageUtil::anyConvert<cilium::NetworkPolicy>(resource);
-    ENVOY_LOG(debug, "Received Network Policy for endpoint {} (->{}) in onConfigUpdate() version {}",
+    ENVOY_LOG(info, "Received Network Policy for endpoint {} (->{}) in onConfigUpdate() version {}",
 	      config.name(), config.policy_name(), version_info);
     keeps.insert(config.name());
     ct_maps_to_keep.insert(config.conntrack_map_name());
@@ -555,6 +555,7 @@ void NetworkPolicyMap::onConfigUpdate(const Protobuf::RepeatedPtrField<ProtobufW
     }
 
     // May throw
+    ENVOY_LOG(info, "Adding policy {}", config.name());
     to_be_added->emplace(config.name(), std::make_shared<PolicyInstanceImpl>(*this, new_hash, config));
   }
 
@@ -564,6 +565,7 @@ void NetworkPolicyMap::onConfigUpdate(const Protobuf::RepeatedPtrField<ProtobufW
   auto cts_to_be_closed = std::make_shared<std::unordered_set<std::string>>();
   for (auto& pair: tls_->getTyped<ThreadLocalPolicyMap>().policies_) {
     if (keeps.find(pair.first) == keeps.end()) {
+      ENVOY_LOG(info, "Deleting policy {}", pair.first);
       to_be_deleted->emplace_back(pair.first);
     }
     // insert conntrack map names we don't want to keep and that have not been already inserted.
@@ -579,7 +581,7 @@ void NetworkPolicyMap::onConfigUpdate(const Protobuf::RepeatedPtrField<ProtobufW
   for (const auto& pair: *to_be_added) {
     auto dedup_name = pair.second->policy_proto_.policy_name();
     if (dedup_name.length() > 0) {
-      ENVOY_LOG(debug, "Cilium resolving reference from endpoint {} to policy {}", pair.first, dedup_name);
+      ENVOY_LOG(info, "Cilium resolving reference from endpoint {} to policy {}", pair.first, dedup_name);
 
       // Check updated policies first
       const auto& it = to_be_added->find(dedup_name);
@@ -587,6 +589,7 @@ void NetworkPolicyMap::onConfigUpdate(const Protobuf::RepeatedPtrField<ProtobufW
 	if (it->second->policy_proto_.policy_name().length() > 0) {
 	  throw EnvoyException(fmt::format("NetworkPolicy: reference to non-terminal policy \'{}\'", dedup_name));
 	}
+	ENVOY_LOG(info, "Found new policy {}", dedup_name);
 	pair.second->dedup_policy_ = it->second;
       } else {
 	// Check that the referred policy is not being deleted
@@ -599,8 +602,10 @@ void NetworkPolicyMap::onConfigUpdate(const Protobuf::RepeatedPtrField<ProtobufW
 	  if (old_policy->policy_proto_.policy_name().length() > 0) {
 	    throw EnvoyException(fmt::format("NetworkPolicy: reference to non-terminal old policy \'{}\'", dedup_name));
 	  }
+	  ENVOY_LOG(info, "Found old policy {}", dedup_name);
 	  pair.second->dedup_policy_ = old_policy;
 	} else {
+	  ENVOY_LOG(info, "Cannot find policy {}", dedup_name);
 	  throw EnvoyException(fmt::format("NetworkPolicy: undefined reference to 'policy_name' \'{}\'", dedup_name));
 	}
       }

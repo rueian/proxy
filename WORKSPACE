@@ -7,18 +7,52 @@ workspace(name = "cilium")
 #
 # No other line in this file may have ENVOY_SHA followed by an equals sign!
 #
-ENVOY_SHA = "fc40c08a807111943c4b3cbe11df494f3e0df4d4"
-ENVOY_SHA256 = "f6bb1bfbd5a6681ef4898f396e671ff4adcd372f6dca8d0cfa980f8b91914ff1"
+ENVOY_SHA = "ed8447bbc862a76c380bdcbc3699840b7338feb1"
+ENVOY_SHA256 = "22c52e4e6e972af4b22e1fb3bc3997d4220c8c03e004fab89498d05798bc4320"
 
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
+# Dependencies for Istio filters.
+# Cf. https://github.com/istio/proxy.
+# Version 1.4.3
+ISTIO_PROXY_SHA = "5f5d621c9fd0b68e12c8e1b95db849588fbdc475"
+ISTIO_PROXY_SHA256 = "3f5f49c617bcabadb685d6fd7979d7976ef401504033e55c4f541e3880c3d01d"
+
+http_archive(
+    name = "istio_proxy",
+    url = "https://github.com/istio/proxy/archive/" + ISTIO_PROXY_SHA + ".tar.gz",
+    sha256 = ISTIO_PROXY_SHA256,
+    strip_prefix = "proxy-" + ISTIO_PROXY_SHA,
+    patches = [
+        "@//patches:istio-add-fallthrough.patch",
+    ],
+    patch_args = ["-p1"],
+)
+
+load(
+    "@istio_proxy//:repositories.bzl",
+    "docker_dependencies",
+    "googletest_repositories",
+    "mixerapi_dependencies",
+)
+googletest_repositories()
+mixerapi_dependencies()
+
+bind(
+    name = "boringssl_crypto",
+    actual = "//external:ssl",
+)
+
 http_archive(
     name = "envoy",
-    url = "https://github.com/jrajahalme/envoy/archive/" + ENVOY_SHA + ".tar.gz",
+    url = "https://github.com/istio/envoy/archive/" + ENVOY_SHA + ".tar.gz",
     sha256 = ENVOY_SHA256,
     strip_prefix = "envoy-" + ENVOY_SHA,
     patches = [
-        "@//patches:sni_support_fix.patch",
+        "@//patches:envoy-original-dst-add-sni.patch",
+        "@//patches:envoy-test-enable-half-close.patch",
+        "@//patches:envoy-add-add-get-transport-socket-factory-context.patch",
+        "@//patches:envoy-connection-pass-socket-options-upstream.patch",
     ],
     patch_args = ["-p1"],
 )
@@ -44,23 +78,41 @@ envoy_dependencies()
 load("@envoy//bazel:dependency_imports.bzl", "envoy_dependency_imports")
 envoy_dependency_imports()
 
-# Dependencies for Istio filters.
-# Cf. https://github.com/istio/proxy.
-# Version 1.2.2
-# ISTIO_PROXY_SHA = "a975561b980463f08689d3debe33bb9eefc80c3d"
-# ISTIO_PROXY_SHA256 = "c0123fe73be4c9f2fe5e673952743ceb836f5972a8377ea876d90b7ab63af6eb"
+# Docker dependencies
 
-#http_archive(
-#    name = "istio_proxy",
-#    url = "https://github.com/istio/proxy/archive/" + ISTIO_PROXY_SHA + ".tar.gz",
-#    sha256 = ISTIO_PROXY_SHA256,
-#    strip_prefix = "proxy-" + ISTIO_PROXY_SHA,
-#)
+docker_dependencies()
 
-#load("@istio_proxy//:repositories.bzl", "mixerapi_dependencies")
-#mixerapi_dependencies()
+load(
+    "@io_bazel_rules_docker//repositories:repositories.bzl",
+    container_repositories = "repositories",
+)
 
-#bind(
-#    name = "boringssl_crypto",
-#    actual = "//external:ssl",
-#)
+container_repositories()
+
+load("@io_bazel_rules_docker//repositories:deps.bzl", container_deps = "deps")
+
+container_deps()
+
+load(
+    "@io_bazel_rules_docker//container:container.bzl",
+    "container_pull",
+)
+
+container_pull(
+    name = "distroless_cc",
+    # Latest as of 10/21/2019. To update, remove this line, re-build, and copy the suggested digest.
+    digest = "sha256:86f16733f25964c40dcd34edf14339ddbb2287af2f7c9dfad88f0366723c00d7",
+    registry = "gcr.io",
+    repository = "distroless/cc",
+)
+
+container_pull(
+    name = "bionic",
+    # Latest as of 10/21/2019. To update, remove this line, re-build, and copy the suggested digest.
+    digest = "sha256:3e83eca7870ee14a03b8026660e71ba761e6919b6982fb920d10254688a363d4",
+    registry = "index.docker.io",
+    repository = "library/ubuntu",
+    tag = "bionic",
+)
+
+# End of docker dependencies

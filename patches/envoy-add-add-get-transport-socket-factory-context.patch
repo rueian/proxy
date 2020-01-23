@@ -1,0 +1,216 @@
+diff --git a/include/envoy/server/filter_config.h b/include/envoy/server/filter_config.h
+index 81d6ab4e0..bd595f90c 100644
+--- a/include/envoy/server/filter_config.h
++++ b/include/envoy/server/filter_config.h
+@@ -106,6 +106,8 @@ public:
+   ~ServerFactoryContext() override = default;
+ };
+ 
++class TransportSocketFactoryContext;
++
+ /**
+  * Context passed to network and HTTP filters to access server resources.
+  * TODO(mattklein123): When we lock down visibility of the rest of the code, filters should only
+@@ -120,6 +122,11 @@ public:
+    */
+   virtual ServerFactoryContext& getServerFactoryContext() const PURE;
+ 
++  /**
++   * @return TransportSocketFactoryContext which lifetime is no shorter than the server.
++   */
++  virtual TransportSocketFactoryContext& getTransportSocketFactoryContext() const PURE;
++
+   /**
+    * @return AccessLogManager for use by the entire server.
+    */
+diff --git a/include/envoy/server/instance.h b/include/envoy/server/instance.h
+index 59e3a9a8b..88d1ae1b1 100644
+--- a/include/envoy/server/instance.h
++++ b/include/envoy/server/instance.h
+@@ -229,6 +229,11 @@ public:
+    * @return Configuration::ServerFactoryContext& factory context for filters.
+    */
+   virtual Configuration::ServerFactoryContext& serverFactoryContext() PURE;
++
++  /**
++   * @return Configuration::TransportSocketFactoryContext& factory context for transport sockets.
++   */
++  virtual Configuration::TransportSocketFactoryContext& transportSocketFactoryContext() PURE;
+ };
+ 
+ } // namespace Server
+diff --git a/include/envoy/server/transport_socket_config.h b/include/envoy/server/transport_socket_config.h
+index ec568e304..f044fd4b4 100644
+--- a/include/envoy/server/transport_socket_config.h
++++ b/include/envoy/server/transport_socket_config.h
+@@ -40,7 +40,7 @@ public:
+   /**
+    * @return Stats::Scope& the transport socket's stats scope.
+    */
+-  virtual Stats::Scope& statsScope() const PURE;
++  virtual Stats::Scope& scope() PURE;
+ 
+   /**
+    * Return the instance of secret manager.
+@@ -55,7 +55,7 @@ public:
+   /**
+    * @return information about the local environment the server is running in.
+    */
+-  virtual const LocalInfo::LocalInfo& localInfo() PURE;
++  virtual const LocalInfo::LocalInfo& localInfo() const PURE;
+ 
+   /**
+    * @return Event::Dispatcher& the main thread's dispatcher.
+diff --git a/source/extensions/transport_sockets/tls/config.cc b/source/extensions/transport_sockets/tls/config.cc
+index 248b47392..3a8f3e063 100644
+--- a/source/extensions/transport_sockets/tls/config.cc
++++ b/source/extensions/transport_sockets/tls/config.cc
+@@ -21,7 +21,7 @@ Network::TransportSocketFactoryPtr UpstreamSslSocketFactory::createTransportSock
+           message, context.messageValidationVisitor()),
+       context);
+   return std::make_unique<ClientSslSocketFactory>(
+-      std::move(client_config), context.sslContextManager(), context.statsScope());
++      std::move(client_config), context.sslContextManager(), context.scope());
+ }
+ 
+ ProtobufTypes::MessagePtr UpstreamSslSocketFactory::createEmptyConfigProto() {
+@@ -39,7 +39,7 @@ Network::TransportSocketFactoryPtr DownstreamSslSocketFactory::createTransportSo
+           message, context.messageValidationVisitor()),
+       context);
+   return std::make_unique<ServerSslSocketFactory>(
+-      std::move(server_config), context.sslContextManager(), context.statsScope(), server_names);
++      std::move(server_config), context.sslContextManager(), context.scope(), server_names);
+ }
+ 
+ ProtobufTypes::MessagePtr DownstreamSslSocketFactory::createEmptyConfigProto() {
+diff --git a/source/server/config_validation/server.h b/source/server/config_validation/server.h
+index bc22ffc87..70d0044e9 100644
+--- a/source/server/config_validation/server.h
++++ b/source/server/config_validation/server.h
+@@ -107,6 +107,9 @@ public:
+     return validation_context_;
+   }
+   Configuration::ServerFactoryContext& serverFactoryContext() override { return server_context_; }
++  Configuration::TransportSocketFactoryContext& transportSocketFactoryContext() override {
++    return server_context_;
++  }
+ 
+   // Server::ListenerComponentFactory
+   LdsApiPtr createLdsApi(const envoy::api::v2::core::ConfigSource& lds_config) override {
+diff --git a/source/server/listener_impl.cc b/source/server/listener_impl.cc
+index 32661629b..828a2c032 100644
+--- a/source/server/listener_impl.cc
++++ b/source/server/listener_impl.cc
+@@ -244,6 +244,9 @@ OptProcessContextRef ListenerImpl::processContext() { return parent_.server_.pro
+ Configuration::ServerFactoryContext& ListenerImpl::getServerFactoryContext() const {
+   return parent_.server_.serverFactoryContext();
+ }
++Configuration::TransportSocketFactoryContext& ListenerImpl::getTransportSocketFactoryContext() const {
++  return parent_.server_.transportSocketFactoryContext();
++}
+ 
+ bool ListenerImpl::createNetworkFilterChain(
+     Network::Connection& connection,
+diff --git a/source/server/listener_impl.h b/source/server/listener_impl.h
+index 21e06155a..341439419 100644
+--- a/source/server/listener_impl.h
++++ b/source/server/listener_impl.h
+@@ -129,6 +129,7 @@ public:
+   ServerLifecycleNotifier& lifecycleNotifier() override;
+   OptProcessContextRef processContext() override;
+   Configuration::ServerFactoryContext& getServerFactoryContext() const override;
++  Configuration::TransportSocketFactoryContext& getTransportSocketFactoryContext() const override;
+ 
+   void ensureSocketOptions() {
+     if (!listen_socket_options_) {
+diff --git a/source/server/server.h b/source/server/server.h
+index 78f479b08..ead4723c0 100644
+--- a/source/server/server.h
++++ b/source/server/server.h
+@@ -14,6 +14,7 @@
+ #include "envoy/server/instance.h"
+ #include "envoy/server/process_context.h"
+ #include "envoy/server/tracer_config.h"
++#include "envoy/server/transport_socket_config.h"
+ #include "envoy/server/wasm.h"
+ #include "envoy/ssl/context_manager.h"
+ #include "envoy/stats/stats_macros.h"
+@@ -143,11 +144,12 @@ private:
+   Event::SignalEventPtr sig_hup_;
+ };
+ 
+-class ServerFactoryContextImpl : public Configuration::ServerFactoryContext {
++class ServerFactoryContextImpl : public Configuration::ServerFactoryContext, public Configuration::TransportSocketFactoryContext {
+ public:
+   explicit ServerFactoryContextImpl(Instance& server)
+       : server_(server), server_scope_(server_.stats().createScope("")) {}
+ 
++  // Configuration::ServerFactoryContext
+   Upstream::ClusterManager& clusterManager() override { return server_.clusterManager(); }
+   Event::Dispatcher& dispatcher() override { return server_.dispatcher(); }
+   const LocalInfo::LocalInfo& localInfo() const override { return server_.localInfo(); }
+@@ -160,6 +162,18 @@ public:
+   TimeSource& timeSource() override { return api().timeSource(); }
+   Api::Api& api() override { return server_.api(); }
+ 
++  // Configuration::TransportSocketFactoryContext
++  Ssl::ContextManager& sslContextManager() override { return server_.sslContextManager(); }
++  Secret::SecretManager& secretManager() override { return server_.secretManager(); }
++  Stats::Store& stats() override { return server_.stats(); }
++  void setInitManager(Init::Manager&) override {}
++  Init::Manager* initManager() override { return &server_.initManager(); }
++  ProtobufMessage::ValidationVisitor& messageValidationVisitor() override {
++    return initManager()->state() == Init::Manager::State::Initialized
++      ? server_.messageValidationContext().dynamicValidationVisitor()
++      : server_.messageValidationContext().staticValidationVisitor();
++  }
++
+ private:
+   Instance& server_;
+   Stats::ScopePtr server_scope_;
+@@ -225,6 +239,10 @@ public:
+ 
+   Configuration::ServerFactoryContext& serverFactoryContext() override { return server_context_; }
+ 
++  Configuration::TransportSocketFactoryContext& transportSocketFactoryContext() override {
++    return server_context_;
++  }
++
+   std::chrono::milliseconds statsFlushInterval() const override {
+     return config_.statsFlushInterval();
+   }
+diff --git a/source/server/transport_socket_config_impl.h b/source/server/transport_socket_config_impl.h
+index 374b36afc..c1868cb4b 100644
+--- a/source/server/transport_socket_config_impl.h
++++ b/source/server/transport_socket_config_impl.h
+@@ -26,12 +26,12 @@ public:
+   // TransportSocketFactoryContext
+   Server::Admin& admin() override { return admin_; }
+   Ssl::ContextManager& sslContextManager() override { return context_manager_; }
+-  Stats::Scope& statsScope() const override { return stats_scope_; }
++  Stats::Scope& scope() override { return stats_scope_; }
+   Secret::SecretManager& secretManager() override {
+     return cluster_manager_.clusterManagerFactory().secretManager();
+   }
+   Upstream::ClusterManager& clusterManager() override { return cluster_manager_; }
+-  const LocalInfo::LocalInfo& localInfo() override { return local_info_; }
++  const LocalInfo::LocalInfo& localInfo() const override { return local_info_; }
+   Event::Dispatcher& dispatcher() override { return dispatcher_; }
+   Envoy::Runtime::RandomGenerator& random() override { return random_; }
+   Stats::Store& stats() override { return stats_; }
+diff --git a/test/mocks/server/mocks.h b/test/mocks/server/mocks.h
+index 9889503a0..d1eebe571 100644
+--- a/test/mocks/server/mocks.h
++++ b/test/mocks/server/mocks.h
+@@ -550,9 +550,9 @@ public:
+ 
+   MOCK_METHOD0(admin, Server::Admin&());
+   MOCK_METHOD0(sslContextManager, Ssl::ContextManager&());
+-  MOCK_CONST_METHOD0(statsScope, Stats::Scope&());
++  MOCK_METHOD0(scope, Stats::Scope&());
+   MOCK_METHOD0(clusterManager, Upstream::ClusterManager&());
+-  MOCK_METHOD0(localInfo, const LocalInfo::LocalInfo&());
++  MOCK_CONST_METHOD0(localInfo, const LocalInfo::LocalInfo&());
+   MOCK_METHOD0(dispatcher, Event::Dispatcher&());
+   MOCK_METHOD0(random, Envoy::Runtime::RandomGenerator&());
+   MOCK_METHOD0(stats, Stats::Store&());

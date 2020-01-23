@@ -34,7 +34,7 @@ CLANG_FORMAT ?= clang-format
 BUILDIFIER ?= buildifier
 STRIP ?= $(QUIET) strip
 
-ISTIO_VERSION = 1.2.2
+ISTIO_VERSION = 1.4.3
 
 DOCKER=$(QUIET)docker
 
@@ -94,7 +94,7 @@ $(CILIUM_ENVOY_BIN) $(CILIUM_ENVOY_RELEASE_BIN): force
 	$(BAZEL) $(BAZEL_OPTS) build $(BAZEL_BUILD_OPTS) -c opt //:cilium-envoy $(BAZEL_FILTER)
 	$(STRIP) -o $(CILIUM_ENVOY_RELEASE_BIN) $(CILIUM_ENVOY_BIN)
 
-Dockerfile.%: Dockerfile.%.in
+Dockerfile.%: Dockerfile.%.in Makefile
 	-sed "s/@ISTIO_VERSION@/$(ISTIO_VERSION)/" <$< >$@
 
 docker-istio-proxy: Dockerfile.istio_proxy envoy_bootstrap_tmpl.json

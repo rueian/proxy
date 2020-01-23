@@ -1,0 +1,33 @@
+diff --git a/source/common/network/connection_impl.cc b/source/common/network/connection_impl.cc
+index 44b073083..96a0bc9fa 100644
+--- a/source/common/network/connection_impl.cc
++++ b/source/common/network/connection_impl.cc
+@@ -670,7 +670,7 @@ ClientConnectionImpl::ClientConnectionImpl(
+     const Network::Address::InstanceConstSharedPtr& source_address,
+     Network::TransportSocketPtr&& transport_socket,
+     const Network::ConnectionSocket::OptionsSharedPtr& options)
+-    : ConnectionImpl(dispatcher, std::make_unique<ClientSocketImpl>(remote_address),
++    : ConnectionImpl(dispatcher, std::make_unique<ClientSocketImpl>(remote_address, options),
+                      std::move(transport_socket), false) {
+   // There are no meaningful socket options or source address semantics for
+   // non-IP sockets, so skip.
+diff --git a/source/common/network/listen_socket_impl.h b/source/common/network/listen_socket_impl.h
+index a5247e68f..34d6c83d8 100644
+--- a/source/common/network/listen_socket_impl.h
++++ b/source/common/network/listen_socket_impl.h
+@@ -176,9 +176,13 @@ public:
+ // ConnectionSocket used with client connections.
+ class ClientSocketImpl : public ConnectionSocketImpl {
+ public:
+-  ClientSocketImpl(const Address::InstanceConstSharedPtr& remote_address)
++  ClientSocketImpl(const Address::InstanceConstSharedPtr& remote_address, const OptionsSharedPtr& options)
+       : ConnectionSocketImpl(remote_address->socket(Address::SocketType::Stream), nullptr,
+-                             remote_address) {}
++                             remote_address) {
++    if (options) {
++      addOptions(options);
++    }
++  }
+ };
+ 
+ } // namespace Network

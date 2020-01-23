@@ -1,5 +1,21 @@
 licenses(["notice"])  # Apache 2
 
+config_setting(
+    name = "darwin",
+    values = {
+        "cpu": "darwin",
+    },
+    visibility = ["//visibility:public"],
+)
+
+genrule(
+    name = "deb_version",
+    srcs = [],
+    outs = ["deb_version.txt"],
+    cmd = "echo $${ISTIO_VERSION:-\"0.3.0-dev\"} > \"$@\"",
+    visibility = ["//visibility:public"],
+)
+
 load(
     "@envoy//bazel:envoy_build_system.bzl",
     "envoy_cc_binary",
@@ -12,6 +28,7 @@ exports_files(["linux/bpf_common.h", "linux/bpf.h", "linux/type_mapper.h",
 envoy_cc_binary(
     name = "cilium-envoy",
     repository = "@envoy",
+    visibility = ["//visibility:public"],
     deps = [
         # Cilium filters.
         "//cilium:bpf_metadata_lib",
@@ -20,12 +37,19 @@ envoy_cc_binary(
         "//cilium:tls_wrapper_lib",
 
         # Istio filters.
-        # Cf. https://github.com/istio/proxy/blob/master/src/envoy/BUILD#L23
-        #"@istio_proxy//src/envoy/http/authn:filter_lib",
-        #"@istio_proxy//src/envoy/http/jwt_auth:http_filter_factory",
-        #"@istio_proxy//src/envoy/http/mixer:filter_lib",
-        #"@istio_proxy//src/envoy/tcp/mixer:filter_lib",
-        #"@istio_proxy//src/envoy/tcp/tcp_cluster_rewrite:config_lib",
+        # Cf. https://github.com/istio/proxy/blob/1.4.3/src/envoy/BUILD#L28
+        "@istio_proxy//extensions/metadata_exchange:metadata_exchange_lib",
+        "@istio_proxy//extensions/stackdriver:stackdriver_plugin",
+        "@istio_proxy//extensions/stats:stats_plugin",
+        "@istio_proxy//src/envoy/http/alpn:config_lib",
+        "@istio_proxy//src/envoy/http/authn:filter_lib",
+        "@istio_proxy//src/envoy/http/jwt_auth:http_filter_factory",
+        "@istio_proxy//src/envoy/http/mixer:filter_lib",
+        "@istio_proxy//src/envoy/tcp/forward_downstream_sni:config_lib",
+        "@istio_proxy//src/envoy/tcp/metadata_exchange:config_lib",
+        "@istio_proxy//src/envoy/tcp/mixer:filter_lib",
+        "@istio_proxy//src/envoy/tcp/sni_verifier:config_lib",
+        "@istio_proxy//src/envoy/tcp/tcp_cluster_rewrite:config_lib",
 
         "@envoy//source/exe:envoy_main_entry_lib",
     ],

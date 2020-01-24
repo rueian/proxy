@@ -94,6 +94,11 @@ $(CILIUM_ENVOY_BIN) $(CILIUM_ENVOY_RELEASE_BIN): force
 	$(BAZEL) $(BAZEL_OPTS) build $(BAZEL_BUILD_OPTS) -c opt //:cilium-envoy $(BAZEL_FILTER)
 	$(STRIP) -o $(CILIUM_ENVOY_RELEASE_BIN) $(CILIUM_ENVOY_BIN)
 
+envoy-deps: force
+	@$(ECHO_BAZEL)
+	-rm -f bazel-out/k8-opt/bin/_objs/cilium-envoy/external/envoy/source/common/common/version_linkstamp.o
+	$(BAZEL) $(BAZEL_OPTS) build $(BAZEL_BUILD_OPTS) -c opt @envoy//source/exe:envoy_main_entry_lib $(BAZEL_FILTER)
+
 Dockerfile.%: Dockerfile.%.in Makefile
 	-sed "s/@ISTIO_VERSION@/$(ISTIO_VERSION)/" <$< >$@
 

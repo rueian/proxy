@@ -5,7 +5,7 @@
 # Keeping the old images available will allow older versions to be built
 # while allowing the new versions to make changes that are not backwards compatible.
 #
-FROM quay.io/cilium/cilium-envoy-builder:eb2fa56cb545431cc6e8a4a4c2f0af2dd84d759c as builder
+FROM quay.io/cilium/cilium-envoy-builder:665bddbaaa48bb6bd33fdd132ac03af310577696 as builder
 LABEL maintainer="maintainer@cilium.io"
 WORKDIR /go/src/github.com/cilium/cilium/envoy
 COPY . ./

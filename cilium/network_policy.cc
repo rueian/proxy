@@ -1,5 +1,5 @@
 #include "cilium/network_policy.h"
-#include "cilium/api/npds.pb.validate.h"
+#include "cilium/api/v3/npds.pb.validate.h"
 #include "cilium/grpc_subscription.h"
 
 #include <string>
@@ -45,6 +45,9 @@ protected:
   public:
     HttpNetworkPolicyRule(const cilium::HttpNetworkPolicyRule& rule) {
       ENVOY_LOG(trace, "Cilium L7 HttpNetworkPolicyRule():");
+#if 1
+      for (const auto& header: rule.headers()) {
+#else
       for (const auto& header_v2: rule.headers()) {
 	// Convert HeaderMatcher v2 to v3 so that we can feed it to internal Envoy APIs.
 	envoy::config::route::v3::HeaderMatcher header;
@@ -87,7 +90,7 @@ protected:
 	case envoy::api::v2::route::HeaderMatcher::HeaderMatchSpecifierCase::HEADER_MATCH_SPECIFIER_NOT_SET:
 	  break;
 	}
-
+#endif
 	headers_.emplace_back(std::make_unique<Envoy::Http::HeaderUtility::HeaderData>(header));
 	const auto& header_data = *headers_.back();
 	ENVOY_LOG(trace, "Cilium L7 HttpNetworkPolicyRule(): HeaderData {}={}",
@@ -101,6 +104,7 @@ protected:
 		  : header_data.header_match_type_ == Http::HeaderUtility::HeaderMatchType::Regex
 		  ? "<REGEX>" : "<UNKNOWN>");
       }
+
       for (const auto& config: rule.header_matches()) {
 	header_matches_.emplace_back(HeaderMatch(config));
 	const auto& header_data = header_matches_.back();
@@ -403,7 +407,7 @@ protected:
     PortNetworkPolicy(const NetworkPolicyMap& parent, const google::protobuf::RepeatedPtrField<cilium::PortNetworkPolicy>& rules) {
       for (const auto& it: rules) {
 	// Only TCP supported for HTTP
-	if (it.protocol() == envoy::api::v2::core::SocketAddress::TCP) {
+	if (it.protocol() == envoy::config::core::v3::SocketAddress::TCP) {
 	  // Port may be zero, which matches any port.
 	  ENVOY_LOG(trace, "Cilium L7 PortNetworkPolicy(): installing TCP policy for port {}", it.port());
 	  if (!rules_.emplace(it.port(), PortNetworkPolicyRules(parent, it.rules())).second) {

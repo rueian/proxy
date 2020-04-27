@@ -16,7 +16,7 @@
 
 #include "extensions/transport_sockets/tls/context_config_impl.h"
 
-#include "cilium/api/npds.pb.h"
+#include "cilium/api/v3/npds.pb.h"
 #include "cilium/accesslog.h"
 #include "cilium/conntrack.h"
 

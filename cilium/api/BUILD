@@ -32,25 +32,3 @@ envoy_proto_library(
     name = "accesslog_proto",
     srcs = ["accesslog.proto"],
 )
-
-api_cc_py_proto_library(
-    name = "npds",
-    srcs = ["npds.proto"],
-    visibility = ["//visibility:public"],
-    deps = [
-        "@envoy_api//envoy/annotations:pkg",
-        "@envoy_api//envoy/api/v2:pkg",
-        "@envoy_api//envoy/api/v2/core:pkg",
-        "@envoy_api//envoy/api/v2/route:pkg",
-    ],
-)
-
-api_cc_py_proto_library(
-    name = "nphds",
-    srcs = ["nphds.proto"],
-    visibility = ["//visibility:public"],
-    deps = [
-        "@envoy_api//envoy/annotations:pkg",
-        "@envoy_api//envoy/api/v2:pkg",
-    ],
-)

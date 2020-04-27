@@ -13,7 +13,7 @@
 #include "envoy/singleton/instance.h"
 #include "envoy/thread_local/thread_local.h"
 
-#include "cilium/api/nphds.pb.h"
+#include "cilium/api/v3/nphds.pb.h"
 
 #include "absl/numeric/int128.h"
 

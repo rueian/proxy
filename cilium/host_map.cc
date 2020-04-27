@@ -1,5 +1,5 @@
 #include "cilium/host_map.h"
-#include "cilium/api/nphds.pb.validate.h"
+#include "cilium/api/v3/nphds.pb.validate.h"
 #include "cilium/grpc_subscription.h"
 
 #include <string>

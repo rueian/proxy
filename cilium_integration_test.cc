@@ -566,7 +566,7 @@ public:
 
   void InvalidHostMap(const std::string& config, const char* exmsg) {
     std::string path = TestEnvironment::writeStringToFileForTest("host_map_fail.yaml", config);
-    envoy::api::v2::DiscoveryResponse message;
+    envoy::service::discovery::v3::DiscoveryResponse message;
     ThreadLocal::InstanceImpl tls;
 
     MessageUtil::loadFromFile(path, message, ProtobufMessage::getNullValidationVisitor(), *api_.get());
@@ -607,7 +607,7 @@ resources:
 )EOF";
 
   std::string path = TestEnvironment::writeStringToFileForTest("host_map_success.yaml", config);
-  envoy::api::v2::DiscoveryResponse message;
+  envoy::service::discovery::v3::DiscoveryResponse message;
   ThreadLocal::InstanceImpl tls;
 
   MessageUtil::loadFromFile(path, message, ProtobufMessage::getNullValidationVisitor(), *api_.get());

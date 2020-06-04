@@ -14,3 +14,20 @@ build:remote --remote_timeout=7200
 # See: https://github.com/envoyproxy/envoy/pull/6519
 build --define path_normalization_by_default=true
 test --define path_normalization_by_default=true
+
+# Use our custom-configured c++ toolchain.
+build:cross_aarch64 --crosstool_top=//toolchain:aarch64
+# Use --cpu as a differentiator.
+build:cross_aarch64 --cpu=aarch64
+# Use the default Bazel C++ toolchain to build the tools used during the build.
+build:cross_aarch64 --host_crosstool_top=@bazel_tools//tools/cpp:toolchain
+
+# See envoy.BUILD
+# build:cross_aarch64 --action_env=CC
+# build:cross_aarch64 --action_env=CXX
+# build:cross_aarch64 --action_env=PATH
+# build:cross_aarch64 --action_env=CXXFLAGS=-stdlib=libc++
+# build:cross_aarch64 --action_env=LDFLAGS=-stdlib=libc++
+# build:cross_aarch64 --action_env=BAZEL_CXXOPTS=-stdlib=libc++
+# build:cross_aarch64 --action_env=BAZEL_LINKLIBS=-l%:libc++.a:-l%:libc++abi.a:-lm
+# build:cross_aarch64 --define force_libcpp=enabled

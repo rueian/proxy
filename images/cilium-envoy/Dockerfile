@@ -27,4 +27,5 @@ RUN --mount=type=bind,readwrite,target=/src \
 FROM scratch
 ARG TARGETPLATFORM
 LABEL maintainer="maintainer@cilium.io"
+COPY images/cilium-envoy/empty /tmp/empty
 COPY --from=builder /out/${TARGETPLATFORM} /

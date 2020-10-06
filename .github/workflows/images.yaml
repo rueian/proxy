@@ -24,6 +24,7 @@ jobs:
           entrypoint: make
           args: -C images lint
   build-and-push:
+    timeout-minutes: 360
     if: (github.repository == 'cilium/proxy' && github.event_name != 'pull_request')
     name: Build and push all images
     runs-on: ubuntu-18.04

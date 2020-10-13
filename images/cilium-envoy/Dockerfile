@@ -17,12 +17,12 @@ RUN --mount=type=bind,readwrite,target=/src \
   PKG_BUILD=1 \
   DESTDIR=/out/linux/amd64
 
-#RUN --mount=type=bind,readwrite,target=/src \
-#  make cilium-envoy install \
-#  BAZEL_BUILD_OPTS="${BAZEL_BUILD_OPTS} --incompatible_enable_cc_toolchain_resolution --platforms=//bazel/platforms:aarch64_cross --record_rule_instantiation_callstack --define cross=aarch64" \
-#  STRIP=aarch64-linux-gnu-strip \
-#  PKG_BUILD=1 \
-#  DESTDIR=/out/linux/arm64
+RUN --mount=type=bind,readwrite,target=/src \
+  make cilium-envoy install \
+  BAZEL_BUILD_OPTS="${BAZEL_BUILD_OPTS} --incompatible_enable_cc_toolchain_resolution --platforms=//bazel/platforms:aarch64_cross --record_rule_instantiation_callstack --define=cross=aarch64" \
+  STRIP=aarch64-linux-gnu-strip \
+  PKG_BUILD=1 \
+  DESTDIR=/out/linux/arm64
 
 FROM scratch
 ARG TARGETPLATFORM

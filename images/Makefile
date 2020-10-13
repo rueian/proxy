@@ -23,4 +23,4 @@ lint:
 .PHONY: cilium-envoy-image
 
 cilium-envoy-image: .buildx_builder
-	ROOT_CONTEXT=true scripts/build-image.sh cilium-envoy-dev images/cilium-envoy linux/amd64 $(OUTPUT) "$$(cat .buildx_builder)" $(REGISTRIES)
+	ROOT_CONTEXT=true scripts/build-image.sh cilium-envoy-dev images/cilium-envoy linux/amd64,linux/arm64 $(OUTPUT) "$$(cat .buildx_builder)" $(REGISTRIES)

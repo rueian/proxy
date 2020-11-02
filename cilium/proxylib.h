@@ -138,9 +138,8 @@ public:
   };
   typedef std::unique_ptr<Instance> InstancePtr;
 
-  InstancePtr NewInstance(Network::Connection& conn, const std::string& go_proto, bool ingress,
-			  uint32_t src_id, uint32_t dst_id,
-			  const std::string& src_addr, const std::string& dst_addr, const std::string& policy_name) const;
+  InstancePtr NewInstance(Network::Connection& conn,
+			  const std::string& src_addr, const std::string& dst_addr) const;
 
 private:
   void *go_module_handle_{nullptr};

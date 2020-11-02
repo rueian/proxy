@@ -101,21 +101,20 @@ const char* filter_strerror(FilterResult res) {
 
 }
 
-GoFilter::InstancePtr GoFilter::NewInstance(Network::Connection& conn, const std::string& go_proto, bool ingress,
-					    uint32_t src_id, uint32_t dst_id,
-					    const std::string& src_addr, const std::string& dst_addr,
-					    const std::string& policy_name) const {
+GoFilter::InstancePtr GoFilter::NewInstance(Network::Connection& conn,
+					    const std::string& src_addr, const std::string& dst_addr) const {
   InstancePtr parser{nullptr};
   if (go_module_handle_) {
     parser = std::make_unique<Instance>(*this, conn);
     ENVOY_CONN_LOG(trace, "GoFilter: Calling go module", conn);
-    auto res = (*go_on_new_connection_)(go_module_id_, go_proto, conn.id(), ingress, src_id, dst_id, src_addr, dst_addr,
-					policy_name,
+    std::string empty;
+    auto res = (*go_on_new_connection_)(go_module_id_, empty, conn.id(), true, 0, 0, src_addr, dst_addr,
+					empty,
 					&parser->orig_.inject_slice_, &parser->reply_.inject_slice_);
     if (res == FILTER_OK) {
       parser->connection_id_ = conn.id();
     } else {
-      ENVOY_CONN_LOG(warn, "Cilium Network: Connection with parser \"{}\" rejected: {}", conn, go_proto,
+      ENVOY_CONN_LOG(warn, "Cilium Network: Connection with parser \"{}\" rejected: {}", conn, "",
 		     filter_strerror(res));
       parser.reset(nullptr);
     }

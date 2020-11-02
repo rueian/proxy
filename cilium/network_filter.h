@@ -60,19 +60,19 @@ public:
   Network::FilterStatus onWrite(Buffer::Instance&, bool end_stream) override;
   
   // Network::ConnectionCallbacks
-  void onEvent(Network::ConnectionEvent) override;
+  void onEvent(Network::ConnectionEvent) override {}
   void onAboveWriteBufferHighWatermark() override {}
   void onBelowWriteBufferLowWatermark() override {}
 
 private:
   const ConfigSharedPtr config_;
   Network::ReadFilterCallbacks* callbacks_ = nullptr;
-  Cilium::ProxyMapSharedPtr maps_{};
-  std::string l7proto_{};
-  uint16_t proxy_port_ = 0;
+  // Cilium::ProxyMapSharedPtr maps_{};
+  // std::string l7proto_{};
+  // uint16_t proxy_port_ = 0;
   Cilium::GoFilter::InstancePtr go_parser_{};
-  Cilium::PortPolicyConstSharedPtr port_policy_{};
-  Cilium::AccessLog::Entry log_entry_{};
+  // Cilium::PortPolicyConstSharedPtr port_policy_{};
+  // Cilium::AccessLog::Entry log_entry_{};
 };
 
 } // namespace CiliumL3
